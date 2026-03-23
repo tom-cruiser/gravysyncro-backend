@@ -27,7 +27,7 @@ exports.authLimiter = rateLimit({
 // Upload rate limiter
 exports.uploadLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: 50, // 50 uploads per hour
+  max: parseInt(process.env.UPLOAD_LIMIT_MAX_REQUESTS) || 300,
   message: 'Too many file uploads, please try again later.',
   handler: (req, res, next) => {
     next(new AppError('Upload limit exceeded. Please try again later.', 429));

@@ -1,35 +1,35 @@
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const mongoSanitize = require('express-mongo-sanitize');
-const xss = require('xss-clean');
-const hpp = require('hpp');
-const compression = require('compression');
-const morgan = require('morgan');
+const express = require("express");
+const cors = require("cors");
+const helmet = require("helmet");
+const mongoSanitize = require("express-mongo-sanitize");
+const xss = require("xss-clean");
+const hpp = require("hpp");
+const compression = require("compression");
+const morgan = require("morgan");
 
-const errorHandler = require('./middleware/errorHandler');
-const { apiLimiter } = require('./middleware/rateLimiter');
-const { logRequest } = require('./middleware/activityLogger');
-const AppError = require('./utils/appError');
+const errorHandler = require("./middleware/errorHandler");
+const { apiLimiter } = require("./middleware/rateLimiter");
+const { logRequest } = require("./middleware/activityLogger");
+const AppError = require("./utils/appError");
 
 // Import routes
-const authRoutes = require('./routes/auth.routes');
-const documentRoutes = require('./routes/document.routes');
-const userRoutes = require('./routes/user.routes');
-const commentRoutes = require('./routes/comment.routes');
-const notificationRoutes = require('./routes/notification.routes');
-const adminRoutes = require('./routes/admin.routes');
-const messageRoutes = require('./routes/message.routes');
+const authRoutes = require("./routes/auth.routes");
+const documentRoutes = require("./routes/document.routes");
+const userRoutes = require("./routes/user.routes");
+const commentRoutes = require("./routes/comment.routes");
+const notificationRoutes = require("./routes/notification.routes");
+const adminRoutes = require("./routes/admin.routes");
+const messageRoutes = require("./routes/message.routes");
 
 // Create Express app
 const app = express();
 
 // Trust proxy
-app.set('trust proxy', 1);
+app.set("trust proxy", 1);
 
 // CORS configuration
 const corsOptions = {
-  origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
+  origin: process.env.ALLOWED_ORIGINS?.split(",") || "*",
   credentials: true,
   optionsSuccessStatus: 200,
 };
@@ -39,8 +39,10 @@ app.use(cors(corsOptions));
 app.use(helmet());
 
 // Body parser middleware
-app.use(express.json({ limit: '10kb' }));
-app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+// Note: multipart/form-data uploads are handled by multer middleware in routes,
+// so these limits only apply to regular JSON/form requests
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 // Data sanitization against NoSQL query injection
 app.use(mongoSanitize());
@@ -51,44 +53,44 @@ app.use(xss());
 // Prevent parameter pollution
 app.use(
   hpp({
-    whitelist: ['tags', 'category', 'role'], // Allow duplicate params for these fields
-  })
+    whitelist: ["tags", "category", "role"], // Allow duplicate params for these fields
+  }),
 );
 
 // Compression middleware
 app.use(compression());
 
 // HTTP request logger (development only)
-if (process.env.NODE_ENV === 'development') {
-  app.use(morgan('dev'));
+if (process.env.NODE_ENV === "development") {
+  app.use(morgan("dev"));
 }
 
 // Rate limiting (disabled in development for performance)
-if (process.env.NODE_ENV === 'production') {
-  app.use('/api', apiLimiter);
+if (process.env.NODE_ENV === "production") {
+  app.use("/api", apiLimiter);
   app.use(logRequest);
 }
 
 // Health check route
-app.get('/health', (req, res) => {
+app.get("/health", (req, res) => {
   res.status(200).json({
-    status: 'success',
-    message: 'Server is running',
+    status: "success",
+    message: "Server is running",
     timestamp: new Date().toISOString(),
   });
 });
 
 // API routes
-app.use('/api/v1/auth', authRoutes);
-app.use('/api/v1/documents', documentRoutes);
-app.use('/api/v1/users', userRoutes);
-app.use('/api/v1/comments', commentRoutes);
-app.use('/api/v1/notifications', notificationRoutes);
-app.use('/api/v1/admin', adminRoutes);
-app.use('/api/v1/messages', messageRoutes);
+app.use("/api/v1/auth", authRoutes);
+app.use("/api/v1/documents", documentRoutes);
+app.use("/api/v1/users", userRoutes);
+app.use("/api/v1/comments", commentRoutes);
+app.use("/api/v1/notifications", notificationRoutes);
+app.use("/api/v1/admin", adminRoutes);
+app.use("/api/v1/messages", messageRoutes);
 
 // Handle undefined routes
-app.all('*', (req, res, next) => {
+app.all("*", (req, res, next) => {
   next(new AppError(`Can't find ${req.originalUrl} on this server`, 404));
 });
 

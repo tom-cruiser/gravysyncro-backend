@@ -1,4 +1,5 @@
 const Notification = require('../models/Notification');
+const mongoose = require('mongoose');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 
@@ -26,7 +27,7 @@ exports.getNotifications = catchAsync(async (req, res, next) => {
 
   // Filter by read status
   if (isRead !== undefined) {
-    query.isRead = isRead === 'true';
+    query.read = isRead === 'true';
   }
 
   // Execute query
@@ -44,7 +45,7 @@ exports.getNotifications = catchAsync(async (req, res, next) => {
   const unreadCount = await Notification.countDocuments({
     user: req.user._id,
     tenantId: req.user.tenantId,
-    isRead: false,
+    read: false,
   });
 
   res.status(200).json({
@@ -66,6 +67,10 @@ exports.getNotifications = catchAsync(async (req, res, next) => {
 exports.markAsRead = catchAsync(async (req, res, next) => {
   const { notificationId } = req.params;
 
+  if (!mongoose.Types.ObjectId.isValid(notificationId)) {
+    return next(new AppError('Invalid notification ID', 400));
+  }
+
   const notification = await Notification.findOne({
     _id: notificationId,
     user: req.user._id,
@@ -76,7 +81,8 @@ exports.markAsRead = catchAsync(async (req, res, next) => {
     return next(new AppError('Notification not found', 404));
   }
 
-  notification.isRead = true;
+  notification.read = true;
+  notification.readAt = new Date();
   await notification.save();
 
   res.status(200).json({
@@ -95,9 +101,9 @@ exports.markAllAsRead = catchAsync(async (req, res, next) => {
     {
       user: req.user._id,
       tenantId: req.user.tenantId,
-      isRead: false,
+      read: false,
     },
-    { isRead: true }
+    { read: true, readAt: new Date() }
   );
 
   res.status(200).json({
@@ -111,6 +117,10 @@ exports.markAllAsRead = catchAsync(async (req, res, next) => {
  */
 exports.deleteNotification = catchAsync(async (req, res, next) => {
   const { notificationId } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(notificationId)) {
+    return next(new AppError('Invalid notification ID', 400));
+  }
 
   const notification = await Notification.findOne({
     _id: notificationId,
@@ -152,7 +162,7 @@ exports.getUnreadCount = catchAsync(async (req, res, next) => {
   const count = await Notification.countDocuments({
     user: req.user._id,
     tenantId: req.user.tenantId,
-    isRead: false,
+    read: false,
   });
 
   res.status(200).json({

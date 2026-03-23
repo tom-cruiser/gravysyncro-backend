@@ -31,7 +31,7 @@ class EmailService {
       const templatePath = path.join(__dirname, '../templates/emails', `${template}.pug`);
       const html = pug.renderFile(templatePath, {
         ...data,
-        appName: process.env.APP_NAME || 'DocArchive',
+        appName: process.env.APP_NAME || 'GravySyncro',
         appUrl: process.env.FRONTEND_URL,
         supportEmail: process.env.SUPPORT_EMAIL,
       });
@@ -64,7 +64,7 @@ class EmailService {
   async sendVerificationEmail(user, verificationUrl) {
     return this.send({
       to: user.email,
-      subject: 'Verify Your Email - DocArchive',
+      subject: 'Verify Your Email - GravySyncro',
       template: 'verifyEmail',
       data: {
         name: user.firstName,
@@ -79,7 +79,7 @@ class EmailService {
   async sendPasswordResetEmail(user, resetUrl) {
     return this.send({
       to: user.email,
-      subject: 'Password Reset Request - DocArchive',
+      subject: 'Password Reset Request - GravySyncro',
       template: 'resetPassword',
       data: {
         name: user.firstName,
@@ -94,7 +94,7 @@ class EmailService {
   async sendWelcomeEmail(user) {
     return this.send({
       to: user.email,
-      subject: 'Welcome to DocArchive!',
+      subject: 'Welcome to GravySyncro!',
       template: 'welcome',
       data: {
         name: user.firstName,
@@ -136,6 +136,25 @@ class EmailService {
       },
     });
   }
+
+  /**
+   * Send storage warning email when usage reaches threshold
+   */
+  async sendStorageQuotaWarningEmail(user, usage) {
+    return this.send({
+      to: user.email,
+      subject: 'Storage Almost Full - Upgrade Recommended',
+      template: 'storageQuotaWarning',
+      data: {
+        name: user.firstName,
+        usagePercent: usage.usagePercent,
+        usedGb: usage.usedGb,
+        totalGb: usage.totalGb,
+        remainingGb: usage.remainingGb,
+        upgradeUrl: `${process.env.FRONTEND_URL}/support`,
+      },
+    });
+  }
 }
 
 // Export singleton instance
@@ -148,4 +167,5 @@ module.exports = {
   sendWelcomeEmail: emailService.sendWelcomeEmail.bind(emailService),
   sendDocumentSharedEmail: emailService.sendDocumentSharedEmail.bind(emailService),
   sendCommentNotificationEmail: emailService.sendCommentNotificationEmail.bind(emailService),
+  sendStorageQuotaWarningEmail: emailService.sendStorageQuotaWarningEmail.bind(emailService),
 };

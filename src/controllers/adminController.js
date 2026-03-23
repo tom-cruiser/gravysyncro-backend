@@ -4,6 +4,7 @@ const ActivityLog = require('../models/ActivityLog');
 const Notification = require('../models/Notification');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
+const { STORAGE_PLAN_GB_OPTIONS, gbToBytes } = require('../utils/storagePlans');
 
 /**
  * Get admin dashboard statistics
@@ -78,6 +79,7 @@ exports.getAllUsers = catchAsync(async (req, res, next) => {
     role,
     tenantId,
     isActive,
+    storagePlanGb,
     sortBy = '-createdAt'
   } = req.query;
 
@@ -96,6 +98,7 @@ exports.getAllUsers = catchAsync(async (req, res, next) => {
   if (role) query.role = role;
   if (tenantId) query.tenantId = tenantId;
   if (isActive !== undefined) query.isActive = isActive === 'true';
+  if (storagePlanGb) query.storagePlanGb = Number(storagePlanGb);
 
   const skip = (page - 1) * limit;
 
@@ -109,11 +112,28 @@ exports.getAllUsers = catchAsync(async (req, res, next) => {
     User.countDocuments(query)
   ]);
 
+  const usersWithStorage = users.map((user) => {
+    const storageUsed = Number(user.storageUsed || 0);
+    const storageLimit = Number(user.storageLimit || 0);
+    const storageUsedPercentage = storageLimit > 0
+      ? Number(((storageUsed / storageLimit) * 100).toFixed(2))
+      : 0;
+
+    return {
+      ...user,
+      storageUsed,
+      storageLimit,
+      storagePlanGb: user.storagePlanGb || 50,
+      storageRemaining: Math.max(storageLimit - storageUsed, 0),
+      storageUsedPercentage,
+    };
+  });
+
   res.status(200).json({
     status: 'success',
-    results: users.length,
+    results: usersWithStorage.length,
     data: {
-      users,
+      users: usersWithStorage,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -508,6 +528,128 @@ exports.updateUserRole = catchAsync(async (req, res, next) => {
 });
 
 /**
+ * Reset user password (admin only)
+ */
+exports.resetUserPassword = catchAsync(async (req, res, next) => {
+  const { userId } = req.params;
+  const { newPassword } = req.body;
+
+  if (!newPassword) {
+    return next(new AppError('New password is required', 400));
+  }
+
+  if (newPassword.length < 8 || newPassword.length > 128) {
+    return next(new AppError('Password must be between 8 and 128 characters', 400));
+  }
+
+  const passwordPattern = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/;
+  if (!passwordPattern.test(newPassword)) {
+    return next(new AppError('Password must contain at least one lowercase letter, one uppercase letter, and one number', 400));
+  }
+
+  const user = await User.findById(userId).select('+password');
+
+  if (!user) {
+    return next(new AppError('User not found', 404));
+  }
+
+  if (user.role === 'Admin') {
+    return next(new AppError('Cannot reset password for admin users', 403));
+  }
+
+  user.password = newPassword;
+  user.passwordResetToken = undefined;
+  user.passwordResetExpires = undefined;
+  await user.save();
+
+  await ActivityLog.create({
+    tenantId: user.tenantId,
+    user: req.user._id,
+    action: 'password_change',
+    resourceType: 'user',
+    resourceId: user._id,
+    details: {
+      action: 'admin_password_reset',
+      resetBy: req.user.email,
+      targetUserEmail: user.email
+    },
+    ipAddress: req.ip,
+    userAgent: req.get('user-agent'),
+    status: 'success'
+  });
+
+  res.status(200).json({
+    status: 'success',
+    message: 'User password reset successfully'
+  });
+});
+
+/**
+ * Update user storage limit plan (admin only)
+ */
+exports.updateUserStorageLimit = catchAsync(async (req, res, next) => {
+  const { userId } = req.params;
+  const { storagePlanGb } = req.body;
+  const normalizedPlan = Number(storagePlanGb);
+
+  if (!STORAGE_PLAN_GB_OPTIONS.includes(normalizedPlan)) {
+    return next(
+      new AppError(
+        `Invalid storage plan. Allowed plans are: ${STORAGE_PLAN_GB_OPTIONS.join(', ')} GB`,
+        400
+      )
+    );
+  }
+
+  const user = await User.findById(userId);
+
+  if (!user) {
+    return next(new AppError('User not found', 404));
+  }
+
+  const oldPlanGb = user.storagePlanGb || 50;
+  user.storagePlanGb = normalizedPlan;
+  user.storageLimit = gbToBytes(normalizedPlan);
+
+  await user.save();
+
+  await ActivityLog.create({
+    tenantId: user.tenantId,
+    user: req.user._id,
+    action: 'settings_change',
+    resourceType: 'user',
+    resourceId: user._id,
+    details: {
+      action: 'storage_plan_updated',
+      oldPlanGb,
+      newPlanGb: normalizedPlan,
+      updatedBy: req.user.email,
+    },
+    ipAddress: req.ip,
+    userAgent: req.get('user-agent'),
+    status: 'success',
+  });
+
+  const storageUsedPercentage = user.storageLimit > 0
+    ? Number(((user.storageUsed / user.storageLimit) * 100).toFixed(2))
+    : 0;
+
+  res.status(200).json({
+    status: 'success',
+    message: `Storage plan updated to ${normalizedPlan} GB`,
+    data: {
+      user: {
+        _id: user._id,
+        storagePlanGb: user.storagePlanGb,
+        storageUsed: user.storageUsed,
+        storageLimit: user.storageLimit,
+        storageUsedPercentage,
+      },
+    },
+  });
+});
+
+/**
  * Get system health
  */
 exports.getSystemHealth = catchAsync(async (req, res, next) => {
@@ -569,6 +711,7 @@ exports.getSystemHealth = catchAsync(async (req, res, next) => {
           accessKeyId: process.env.WASABI_ACCESS_KEY_ID,
           secretAccessKey: process.env.WASABI_SECRET_ACCESS_KEY,
           signatureVersion: 'v4',
+          s3ForcePathStyle: true,
           httpOptions: { timeout: 3000 }
         });
 

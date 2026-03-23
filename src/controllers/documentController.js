@@ -7,6 +7,12 @@ const { log } = require('../middleware/activityLogger');
 const { sendDocumentSharedEmail } = require('../services/emailService');
 const sharp = require('sharp');
 
+const isLikelyPdfBuffer = (buffer) => {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) return false;
+  const headerScan = buffer.subarray(0, Math.min(buffer.length, 1024)).toString('latin1');
+  return headerScan.includes('%PDF-');
+};
+
 /**
  * Upload document
  */
@@ -15,42 +21,114 @@ exports.uploadDocument = catchAsync(async (req, res, next) => {
     return next(new AppError('Please provide a file to upload', 400));
   }
 
-  const { name, description, category, tags, folderId } = req.body;
+  if (!Buffer.isBuffer(req.file.buffer) || req.file.buffer.length === 0) {
+    return next(new AppError('Uploaded file is empty or invalid. Please try again.', 400));
+  }
+
+  if (req.file.mimetype === 'application/pdf') {
+    if (!isLikelyPdfBuffer(req.file.buffer)) {
+      return next(new AppError('Invalid PDF file content. Please upload a valid PDF document.', 400));
+    }
+  }
+
+  const { name, title, description, type, category, tags, folderId, folderPath, relativePath } = req.body;
+
+  const normalizePath = (value = '') =>
+    String(value)
+      .replace(/\\/g, '/')
+      .split('/')
+      .filter(Boolean)
+      .join('/');
+
+  const normalizedFolderPath = normalizePath(folderPath);
+  const normalizedRelativePath = normalizePath(relativePath) ||
+    (normalizedFolderPath ? `${normalizedFolderPath}/${req.file.originalname}` : req.file.originalname);
+  const folderName = normalizedFolderPath ? normalizedFolderPath.split('/').pop() : 'root';
+  const pathValue = normalizedFolderPath ? `/${normalizedFolderPath}` : '/';
 
   // Process image if it's an image
   let fileBuffer = req.file.buffer;
   if (req.file.mimetype.startsWith('image/')) {
-    fileBuffer = await sharp(req.file.buffer)
-      .resize(2000, 2000, { fit: 'inside', withoutEnlargement: true })
-      .jpeg({ quality: 90 })
-      .toBuffer();
+    try {
+      fileBuffer = await sharp(req.file.buffer)
+        .resize(2000, 2000, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 90 })
+        .toBuffer();
+    } catch (sharpError) {
+      return next(new AppError(`Image processing failed: ${sharpError.message}`, 400));
+    }
+  }
+
+  const latestUser = await User.findById(req.user._id).select('storageUsed storageLimit');
+  if (!latestUser) {
+    return next(new AppError('User not found', 404));
+  }
+
+  const fileSizeBytes = fileBuffer.length;
+  const projectedUsage = Number(latestUser.storageUsed || 0) + fileSizeBytes;
+  if (projectedUsage > Number(latestUser.storageLimit || 0)) {
+    const availableBytes = Math.max(Number(latestUser.storageLimit || 0) - Number(latestUser.storageUsed || 0), 0);
+    return next(
+      new AppError(
+        `Storage limit reached. Available space: ${(availableBytes / (1024 * 1024)).toFixed(2)} MB. Please ask your admin to upgrade your plan.`,
+        403
+      )
+    );
   }
 
   // Upload to Wasabi
   const fileKey = `${req.user.tenantId}/documents/${Date.now()}-${req.file.originalname}`;
-  await uploadFile(fileKey, fileBuffer, req.file.mimetype);
+  try {
+    await uploadFile(fileKey, fileBuffer, req.file.mimetype);
+  } catch (wasabiError) {
+    if (wasabiError.code === 'Forbidden' || wasabiError.code === 'AccessDenied') {
+      return next(new AppError('Storage service permission denied. Please verify Wasabi credentials.', 503));
+    }
+    if (wasabiError.code === 'NoSuchBucket') {
+      return next(new AppError('Storage bucket not found. Please verify bucket configuration.', 503));
+    }
+    // Re-throw for generic error handler
+    throw wasabiError;
+  }
 
   // Create document record
   const document = await Document.create({
     tenantId: req.user.tenantId,
-    name: name || req.file.originalname,
+    owner: req.user._id,
+    uploadedBy: req.user._id,
+    title: title || name || req.file.originalname,
+    name: name || title || req.file.originalname,
     description,
+    type: type || category || 'General',
+    fileName: req.file.originalname,
+    originalName: req.file.originalname,
+    fileSize: fileSizeBytes,
+    fileExtension: req.file.originalname.includes('.') ? req.file.originalname.split('.').pop().toLowerCase() : 'bin',
+    storageKey: fileKey,
+    checksum: `${Date.now()}-${fileSizeBytes}`,
     filename: req.file.originalname,
     fileKey,
     mimeType: req.file.mimetype,
-    size: req.file.size,
+    size: fileSizeBytes,
     category,
     tags: tags ? tags.split(',').map(tag => tag.trim()) : [],
     folderId,
-    uploadedBy: req.user._id,
+    folder: folderName,
+    path: pathValue,
+    folderPath: normalizedFolderPath,
+    relativePath: normalizedRelativePath,
     versions: [{
       version: 1,
       fileKey,
-      size: req.file.size,
+      size: fileSizeBytes,
       uploadedBy: req.user._id,
       uploadedAt: Date.now(),
       changes: 'Initial upload',
     }],
+  });
+
+  await User.findByIdAndUpdate(req.user._id, {
+    $inc: { storageUsed: fileSizeBytes },
   });
 
   // Log activity
@@ -120,6 +198,7 @@ exports.getAllDocuments = catchAsync(async (req, res, next) => {
   if (req.user.role !== 'admin') {
     query.$or = [
       { uploadedBy: req.user._id },
+      { owner: req.user._id },
       { 'sharedWith.user': req.user._id },
       { visibility: 'public' },
     ];
@@ -162,7 +241,7 @@ exports.getDocument = catchAsync(async (req, res, next) => {
     .populate('accessLog.user', 'firstName lastName email');
 
   if (!document) {
-    return next(new AppError('Document not found', 404));
+    return next(new AppError(`Document with ID "${req.params.id}" not found. It may have been deleted.`, 404));
   }
 
   // Check permissions
@@ -194,7 +273,7 @@ exports.updateDocument = catchAsync(async (req, res, next) => {
   });
 
   if (!document) {
-    return next(new AppError('Document not found', 404));
+    return next(new AppError(`Document with ID "${req.params.id}" not found. It may have been deleted.`, 404));
   }
 
   // Check permissions
@@ -234,7 +313,7 @@ exports.deleteDocument = catchAsync(async (req, res, next) => {
   });
 
   if (!document) {
-    return next(new AppError('Document not found', 404));
+    return next(new AppError(`Document with ID "${req.params.id}" not found or already deleted.`, 404));
   }
 
   // Check permissions
@@ -267,7 +346,7 @@ exports.permanentDeleteDocument = catchAsync(async (req, res, next) => {
   });
 
   if (!document) {
-    return next(new AppError('Document not found', 404));
+    return next(new AppError(`Document with ID "${req.params.id}" not found.`, 404));
   }
 
   // Only admin or document owner can permanently delete
@@ -276,17 +355,47 @@ exports.permanentDeleteDocument = catchAsync(async (req, res, next) => {
   }
 
   // Delete from Wasabi
-  await deleteFile(document.fileKey);
+  try {
+    await deleteFile(document.fileKey);
+  } catch (wasabiError) {
+    if (wasabiError.code === 'NoSuchKey') {
+      console.warn(`Document file already deleted from storage: ${document.fileKey}`);
+      // Continue - file may have been deleted externally
+    } else if (wasabiError.code === 'Forbidden' || wasabiError.code === 'AccessDenied') {
+      return next(new AppError('Storage permission denied when deleting file. Verify Wasabi credentials.', 503));
+    } else if (wasabiError.code === 'NoSuchBucket') {
+      return next(new AppError('Storage bucket not found. Verify bucket configuration.', 503));
+    } else {
+      // Re-throw for generic error handler
+      throw wasabiError;
+    }
+  }
 
   // Delete all versions
   for (const version of document.versions) {
     if (version.fileKey !== document.fileKey) {
-      await deleteFile(version.fileKey);
+      try {
+        await deleteFile(version.fileKey);
+      } catch (wasabiError) {
+        if (wasabiError.code !== 'NoSuchKey') {
+          console.warn(`Failed to delete version file: ${version.fileKey}`, wasabiError.message);
+        }
+        // Continue even if version deletion fails
+      }
     }
   }
 
   // Delete from database
   await Document.deleteOne({ _id: document._id });
+
+  await User.findByIdAndUpdate(document.owner, {
+    $inc: { storageUsed: -Math.max(Number(document.fileSize || 0), 0) },
+  });
+
+  await User.updateOne(
+    { _id: document.owner, storageUsed: { $lt: 0 } },
+    { $set: { storageUsed: 0 } }
+  );
 
   // Log activity
   await log(req, 'document_permanent_delete', 'document', document._id, { documentName: document.name });
@@ -301,6 +410,9 @@ exports.permanentDeleteDocument = catchAsync(async (req, res, next) => {
  * Download document
  */
 exports.downloadDocument = catchAsync(async (req, res, next) => {
+  const disposition = req.query.disposition === 'inline' ? 'inline' : 'attachment';
+  const shouldProxy = req.query.proxy === 'true';
+
   const document = await Document.findOne({
     _id: req.params.id,
     tenantId: req.user.tenantId,
@@ -308,7 +420,7 @@ exports.downloadDocument = catchAsync(async (req, res, next) => {
   });
 
   if (!document) {
-    return next(new AppError('Document not found', 404));
+    return next(new AppError(`Document with ID "${req.params.id}" not found. It may have been deleted.`, 404));
   }
 
   // Check permissions
@@ -316,8 +428,73 @@ exports.downloadDocument = catchAsync(async (req, res, next) => {
     return next(new AppError('You do not have permission to download this document', 403));
   }
 
+  if (shouldProxy) {
+    let fileObject;
+    try {
+      fileObject = await downloadFile(document.fileKey);
+    } catch (wasabiError) {
+      if (wasabiError.code === 'NoSuchKey') {
+        return next(new AppError('Document file not found in storage. File may have been deleted externally.', 404));
+      }
+      if (wasabiError.code === 'Forbidden' || wasabiError.code === 'AccessDenied') {
+        return next(new AppError('Storage service permission denied when accessing file. Verify Wasabi credentials.', 503));
+      }
+      if (wasabiError.code === 'NoSuchBucket') {
+        return next(new AppError('Storage bucket not found. Verify bucket configuration.', 503));
+      }
+      throw wasabiError;
+    }
+
+    const fileBuffer = Buffer.isBuffer(fileObject?.Body)
+      ? fileObject.Body
+      : Buffer.from(fileObject?.Body || '');
+
+    if (fileBuffer.length === 0) {
+      return next(new AppError('Stored document is empty or corrupted. Please re-upload the file.', 422));
+    }
+
+    if (document.mimeType === 'application/pdf' && disposition === 'inline') {
+      if (!isLikelyPdfBuffer(fileBuffer)) {
+        return next(new AppError('Stored PDF cannot be previewed because it appears corrupted. Please re-upload the file or download it directly.', 422));
+      }
+    }
+
+    const safeFileName = String(document.filename || document.originalName || document.name || 'document')
+      .replace(/[\r\n]/g, ' ')
+      .replace(/["\\]/g, '')
+      .trim() || 'document';
+
+    res.setHeader('Content-Type', document.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Length', fileBuffer.length);
+    res.setHeader('Content-Disposition', `${disposition}; filename="${safeFileName}"`);
+
+    // Log access for proxied download/view as well.
+    await document.logAccess(req.user._id, 'download');
+    await log(req, 'document_download', 'document', document._id, { documentName: document.name });
+
+    return res.status(200).send(fileBuffer);
+  }
+
   // Get signed URL
-  const signedUrl = await getSignedUrl(document.fileKey, document.filename);
+  let signedUrl;
+  try {
+    signedUrl = await getSignedUrl(document.fileKey, {
+      downloadName: document.filename || document.name || 'document',
+      disposition,
+    });
+  } catch (wasabiError) {
+    if (wasabiError.code === 'NoSuchKey') {
+      return next(new AppError('Document file not found in storage. File may have been deleted externally.', 404));
+    }
+    if (wasabiError.code === 'Forbidden' || wasabiError.code === 'AccessDenied') {
+      return next(new AppError('Storage service permission denied when accessing file. Verify Wasabi credentials.', 503));
+    }
+    if (wasabiError.code === 'NoSuchBucket') {
+      return next(new AppError('Storage bucket not found. Verify bucket configuration.', 503));
+    }
+    // Re-throw for generic error handler
+    throw wasabiError;
+  }
 
   // Log access
   await document.logAccess(req.user._id, 'download');
@@ -337,7 +514,7 @@ exports.downloadDocument = catchAsync(async (req, res, next) => {
  * Share document
  */
 exports.shareDocument = catchAsync(async (req, res, next) => {
-  const { userId, permission, message } = req.body;
+  const { userId, userEmail, permission, message } = req.body;
 
   const document = await Document.findOne({
     _id: req.params.id,
@@ -346,7 +523,7 @@ exports.shareDocument = catchAsync(async (req, res, next) => {
   });
 
   if (!document) {
-    return next(new AppError('Document not found', 404));
+    return next(new AppError(`Document with ID "${req.params.id}" not found. It may have been deleted.`, 404));
   }
 
   // Check permissions
@@ -354,19 +531,26 @@ exports.shareDocument = catchAsync(async (req, res, next) => {
     return next(new AppError('You do not have permission to share this document', 403));
   }
 
-  // Check if user exists in same tenant
-  const userToShare = await User.findOne({
-    _id: userId,
-    tenantId: req.user.tenantId,
-  });
+  // Resolve target user by id or email in the same tenant
+  const userQuery = { tenantId: req.user.tenantId };
+  if (userId) {
+    userQuery._id = userId;
+  } else if (userEmail) {
+    userQuery.email = userEmail.toLowerCase();
+  } else {
+    return next(new AppError('Please provide userId or userEmail', 400));
+  }
+
+  const userToShare = await User.findOne(userQuery);
 
   if (!userToShare) {
-    return next(new AppError('User not found', 404));
+    return next(new AppError(`User with email "${userEmail || userId}" not found in your organization.`, 404));
   }
 
   // Check if already shared
+  const targetUserId = userToShare._id.toString();
   const existingShare = document.sharedWith.find(
-    share => share.user.toString() === userId
+    share => share.user.toString() === targetUserId
   );
 
   if (existingShare) {
@@ -375,7 +559,7 @@ exports.shareDocument = catchAsync(async (req, res, next) => {
   } else {
     // Add new share
     document.sharedWith.push({
-      user: userId,
+      user: targetUserId,
       permission,
       sharedBy: req.user._id,
     });
@@ -383,8 +567,12 @@ exports.shareDocument = catchAsync(async (req, res, next) => {
 
   await document.save();
 
-  // Send email notification
-  await sendDocumentSharedEmail(userToShare, document, req.user);
+  // Send email notification, but do not fail sharing if email service is unavailable.
+  try {
+    await sendDocumentSharedEmail(userToShare, document, req.user);
+  } catch (emailError) {
+    console.error('Document shared but email notification failed:', emailError.message);
+  }
 
   // Log activity
   await log(req, 'document_share', 'document', document._id, {
@@ -415,7 +603,7 @@ exports.unshareDocument = catchAsync(async (req, res, next) => {
   });
 
   if (!document) {
-    return next(new AppError('Document not found', 404));
+    return next(new AppError(`Document with ID "${req.params.id}" not found. It may have been deleted.`, 404));
   }
 
   // Check permissions
@@ -450,7 +638,7 @@ exports.getVersions = catchAsync(async (req, res, next) => {
   }).populate('versions.uploadedBy', 'firstName lastName email');
 
   if (!document) {
-    return next(new AppError('Document not found', 404));
+    return next(new AppError(`Document with ID "${req.params.id}" not found. It may have been deleted.`, 404));
   }
 
   // Check permissions
@@ -480,7 +668,7 @@ exports.restoreVersion = catchAsync(async (req, res, next) => {
   });
 
   if (!document) {
-    return next(new AppError('Document not found', 404));
+    return next(new AppError(`Document with ID "${req.params.id}" not found. It may have been deleted.`, 404));
   }
 
   // Check permissions
@@ -491,7 +679,7 @@ exports.restoreVersion = catchAsync(async (req, res, next) => {
   // Find version
   const version = document.versions.find(v => v.version === parseInt(versionNumber));
   if (!version) {
-    return next(new AppError('Version not found', 404));
+    return next(new AppError(`Version ${versionNumber} not found. Available versions: ${document.versions.map(v => v.version).join(', ')}`, 404));
   }
 
   // Create new version from restored version

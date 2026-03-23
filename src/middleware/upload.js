@@ -19,6 +19,7 @@ const fileFilter = (req, file, cb) => {
     'image/jpeg',
     'image/png',
     'image/gif',
+    'image/webp',
     'text/plain',
     'application/zip',
     'application/x-rar-compressed',
@@ -36,21 +37,21 @@ const upload = multer({
   storage: storage,
   fileFilter: fileFilter,
   limits: {
-    fileSize: parseInt(process.env.MAX_FILE_SIZE) || 104857600, // 100MB default
-    files: parseInt(process.env.MAX_FILES_PER_UPLOAD) || 10,
+    fileSize: parseInt(process.env.MAX_FILE_SIZE) || 157286400, // 150MB default
+    files: parseInt(process.env.MAX_FILES_PER_UPLOAD) || 100,
   },
 });
 
 // Export upload middleware
 exports.upload = upload;
 exports.uploadSingle = upload.single('file');
-exports.uploadMultiple = upload.array('files', parseInt(process.env.MAX_FILES_PER_UPLOAD) || 10);
+exports.uploadMultiple = upload.array('files', parseInt(process.env.MAX_FILES_PER_UPLOAD) || 100);
 
 // Error handler for multer errors
 exports.handleMulterError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
-      return next(new AppError('File size is too large. Maximum size is 100MB.', 400));
+      return next(new AppError('File size is too large. Maximum size is 150MB.', 400));
     }
     if (err.code === 'LIMIT_FILE_COUNT') {
       return next(new AppError(`Too many files. Maximum is ${process.env.MAX_FILES_PER_UPLOAD || 10} files.`, 400));

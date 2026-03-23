@@ -15,11 +15,20 @@ const documentSchema = new mongoose.Schema({
     required: true,
     index: true,
   },
+  uploadedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    index: true,
+  },
   
   // Document Information
   title: {
     type: String,
     required: [true, 'Document title is required'],
+    trim: true,
+  },
+  name: {
+    type: String,
     trim: true,
   },
   description: {
@@ -38,6 +47,9 @@ const documentSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  filename: {
+    type: String,
+  },
   originalName: {
     type: String,
     required: true,
@@ -50,6 +62,9 @@ const documentSchema = new mongoose.Schema({
     type: Number,
     required: true,
   },
+  size: {
+    type: Number,
+  },
   fileExtension: {
     type: String,
     required: true,
@@ -60,6 +75,11 @@ const documentSchema = new mongoose.Schema({
     type: String,
     required: true,
     unique: true,
+  },
+  fileKey: {
+    type: String,
+    unique: true,
+    sparse: true,
   },
   checksum: {
     type: String,
@@ -134,15 +154,37 @@ const documentSchema = new mongoose.Schema({
     enum: ['active', 'archived', 'deleted'],
     default: 'active',
   },
+  isDeleted: {
+    type: Boolean,
+    default: false,
+    index: true,
+  },
+  visibility: {
+    type: String,
+    enum: ['private', 'public'],
+    default: 'private',
+  },
   
   // Folder/Organization
   folder: {
     type: String,
     default: 'root',
   },
+  folderId: {
+    type: String,
+    default: null,
+  },
   path: {
     type: String,
     default: '/',
+  },
+  folderPath: {
+    type: String,
+    default: '',
+  },
+  relativePath: {
+    type: String,
+    default: '',
   },
   
   // Soft Delete
@@ -151,6 +193,34 @@ const documentSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
   },
+
+  versions: [{
+    version: Number,
+    fileKey: String,
+    size: Number,
+    uploadedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+    },
+    uploadedAt: Date,
+    changes: String,
+  }],
+
+  accessLog: [{
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+    },
+    action: {
+      type: String,
+      enum: ['view', 'download'],
+      default: 'view',
+    },
+    timestamp: {
+      type: Date,
+      default: Date.now,
+    },
+  }],
   
   // Access Tracking
   lastAccessedAt: Date,
@@ -176,6 +246,7 @@ documentSchema.index({ tenantId: 1, type: 1 });
 documentSchema.index({ tenantId: 1, createdAt: -1 });
 documentSchema.index({ tenantId: 1, tags: 1 });
 documentSchema.index({ 'sharedWith.user': 1 });
+documentSchema.index({ tenantId: 1, folderPath: 1, createdAt: -1 });
 
 // Text search index
 documentSchema.index({ 
@@ -205,7 +276,8 @@ documentSchema.virtual('fileSizeFormatted').get(function() {
 // Method to check if user has access
 documentSchema.methods.hasAccess = function(userId, requiredPermission = 'view') {
   // Owner has full access
-  if (this.owner.toString() === userId.toString()) {
+  const ownerId = this.owner || this.uploadedBy;
+  if (ownerId && ownerId.toString() === userId.toString()) {
     return true;
   }
   
@@ -227,8 +299,32 @@ documentSchema.methods.hasAccess = function(userId, requiredPermission = 'view')
   if (requiredPermission === 'admin') {
     return sharedEntry.permission === 'admin';
   }
+
+  if (requiredPermission === 'share' || requiredPermission === 'delete') {
+    return sharedEntry.permission === 'admin';
+  }
   
   return false;
+};
+
+// Backward-compatible alias used by controllers.
+documentSchema.methods.canUserAccess = function(userId, requiredPermission = 'view') {
+  return this.hasAccess(userId, requiredPermission);
+};
+
+// Track user access in both legacy and current counters.
+documentSchema.methods.logAccess = function(userId, action = 'view') {
+  this.lastAccessedAt = Date.now();
+  this.accessCount = (this.accessCount || 0) + 1;
+  this.accessLog.push({
+    user: userId,
+    action,
+    timestamp: new Date(),
+  });
+  if (action === 'download') {
+    this.downloadCount = (this.downloadCount || 0) + 1;
+  }
+  return this.save();
 };
 
 // Increment access count

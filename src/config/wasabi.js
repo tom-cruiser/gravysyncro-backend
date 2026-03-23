@@ -1,23 +1,50 @@
 const AWS = require('aws-sdk');
 
+const sanitizeFileName = (name = 'document') =>
+  String(name)
+    .replace(/[\r\n]/g, ' ')
+    .replace(/["\\]/g, '')
+    .trim() || 'document';
+
+const encodeRFC5987ValueChars = (str) =>
+  encodeURIComponent(str)
+    .replace(/['()]/g, escape)
+    .replace(/\*/g, '%2A');
+
+const resolveWasabiEndpoint = () => {
+  const configuredEndpoint = (process.env.WASABI_ENDPOINT || '').trim();
+  const region = (process.env.WASABI_REGION || '').trim();
+
+  if (!configuredEndpoint && region) {
+    return `https://s3.${region}.wasabisys.com`;
+  }
+
+  if (configuredEndpoint === 'https://s3.wasabisys.com' && region) {
+    return `https://s3.${region}.wasabisys.com`;
+  }
+
+  return configuredEndpoint;
+};
+
 // Configure Wasabi S3
 const s3 = new AWS.S3({
-  endpoint: process.env.WASABI_ENDPOINT,
+  endpoint: resolveWasabiEndpoint(),
   region: process.env.WASABI_REGION,
   accessKeyId: process.env.WASABI_ACCESS_KEY_ID,
   secretAccessKey: process.env.WASABI_SECRET_ACCESS_KEY,
   signatureVersion: 'v4',
+  s3ForcePathStyle: false,
 });
 
 /**
  * Upload file to Wasabi
  */
-const uploadFile = async (file, key, metadata = {}) => {
+const uploadFile = async (key, body, contentType, metadata = {}) => {
   const params = {
     Bucket: process.env.WASABI_BUCKET,
     Key: key,
-    Body: file.buffer,
-    ContentType: file.mimetype,
+    Body: body,
+    ContentType: contentType,
     Metadata: metadata,
     ServerSideEncryption: 'AES256',
   };
@@ -52,12 +79,25 @@ const deleteFile = async (key) => {
 /**
  * Generate signed URL for temporary access
  */
-const getSignedUrl = (key, expiresIn = 3600) => {
+const getSignedUrl = (key, options = {}) => {
+  const {
+    expiresIn = 3600,
+    downloadName,
+    disposition = 'attachment',
+  } = options;
+
   const params = {
     Bucket: process.env.WASABI_BUCKET,
     Key: key,
     Expires: expiresIn,
   };
+
+  if (downloadName) {
+    const safeName = sanitizeFileName(downloadName);
+    const normalizedDisposition = disposition === 'inline' ? 'inline' : 'attachment';
+    params.ResponseContentDisposition =
+      `${normalizedDisposition}; filename=${safeName}; filename*=UTF-8''${encodeRFC5987ValueChars(safeName)}`;
+  }
 
   return s3.getSignedUrl('getObject', params);
 };

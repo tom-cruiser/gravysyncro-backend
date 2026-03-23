@@ -88,7 +88,7 @@ exports.register = catchAsync(async (req, res, next) => {
       const verificationUrl = `${req.protocol}://${req.get('host')}/api/v1/auth/verify-email/${verificationToken}`;
       sendEmail({
         to: user.email,
-        subject: 'Verify Your Email - DocArchive',
+        subject: 'Verify Your Email - GravySyncro',
         template: 'verifyEmail',
         data: {
           name: user.firstName,
@@ -207,7 +207,7 @@ exports.forgotPassword = catchAsync(async (req, res, next) => {
   const resetUrl = `${req.protocol}://${req.get('host')}/api/v1/auth/reset-password/${resetToken}`;
   await sendEmail({
     to: user.email,
-    subject: 'Password Reset Request - DocArchive',
+    subject: 'Password Reset Request - GravySyncro',
     template: 'resetPassword',
     data: {
       name: user.firstName,
@@ -250,7 +250,7 @@ exports.resetPassword = catchAsync(async (req, res, next) => {
   // Send confirmation email
   await sendEmail({
     to: user.email,
-    subject: 'Password Changed Successfully - DocArchive',
+    subject: 'Password Changed Successfully - GravySyncro',
     template: 'passwordChanged',
     data: {
       name: user.firstName,
@@ -287,7 +287,7 @@ exports.changePassword = catchAsync(async (req, res, next) => {
     log(req, 'password_change', 'user', user._id),
     sendEmail({
       to: user.email,
-      subject: 'Password Changed Successfully - DocArchive',
+      subject: 'Password Changed Successfully - GravySyncro',
       template: 'passwordChanged',
       data: {
         name: user.firstName,

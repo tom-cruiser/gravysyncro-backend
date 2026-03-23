@@ -1,16 +1,16 @@
-const mongoose = require('mongoose');
-require('dotenv').config();
+const mongoose = require("mongoose");
+require("dotenv").config();
 
 const makeAdmin = async (email) => {
   try {
     await mongoose.connect(process.env.MONGODB_URI);
-    console.log('Connected to MongoDB\n');
+    console.log("Connected to MongoDB\n");
 
-    const User = require('./src/models/User');
+    const User = require("./src/models/User");
 
     if (!email) {
-      console.log('Usage: node make-admin.js <user-email>');
-      console.log('\nExample: node make-admin.js tomyrret@gmail.com');
+      console.log("Usage: node make-admin.js <user-email>");
+      console.log("\nExample: node make-admin.js tomyrret@gmail.com");
       process.exit(1);
     }
 
@@ -21,17 +21,17 @@ const makeAdmin = async (email) => {
       process.exit(1);
     }
 
-    if (user.role === 'Admin') {
+    if (user.role === "Admin") {
       console.log(`ℹ️  User "${email}" is already an Admin`);
       process.exit(0);
     }
 
     const oldRole = user.role;
-    user.role = 'Admin';
+    user.role = "Admin";
     await user.save();
 
-    console.log('✅ User promoted to Admin successfully!\n');
-    console.log('User Details:');
+    console.log("✅ User promoted to Admin successfully!\n");
+    console.log("User Details:");
     console.log(`  Name: ${user.firstName} ${user.lastName}`);
     console.log(`  Email: ${user.email}`);
     console.log(`  Old Role: ${oldRole}`);
@@ -40,7 +40,7 @@ const makeAdmin = async (email) => {
 
     process.exit(0);
   } catch (error) {
-    console.error('\n❌ Error:', error.message);
+    console.error("\n❌ Error:", error.message);
     process.exit(1);
   }
 };
