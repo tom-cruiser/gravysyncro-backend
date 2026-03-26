@@ -59,12 +59,20 @@ const schemas = {
 
   // Document upload
   uploadDocument: Joi.object({
-    title: Joi.string().trim().min(1).max(255).required(),
+    title: Joi.string().trim().min(1).max(255).optional().allow(''),
+    name: Joi.string().trim().max(255).optional().allow(''),
     description: Joi.string().trim().max(1000).optional().allow(''),
     type: Joi.string().valid('General', 'Contract', 'Legal', 'Academic', 'Financial', 'Personal', 'Other').default('General'),
-    tags: Joi.array().items(Joi.string().trim()).optional(),
-    category: Joi.string().trim().optional(),
-    folder: Joi.string().trim().optional(),
+    // tags may arrive as comma-separated string or array
+    tags: Joi.alternatives().try(
+      Joi.array().items(Joi.string().trim()),
+      Joi.string().trim().allow('')
+    ).optional(),
+    category: Joi.string().trim().optional().allow(''),
+    folder: Joi.string().trim().optional().allow(''),
+    folderId: Joi.string().optional().allow('', null),
+    folderPath: Joi.string().trim().optional().allow(''),
+    relativePath: Joi.string().trim().optional().allow(''),
   }),
 
   // Update document
@@ -72,9 +80,14 @@ const schemas = {
     title: Joi.string().trim().min(1).max(255).optional(),
     description: Joi.string().trim().max(1000).optional(),
     type: Joi.string().valid('General', 'Contract', 'Legal', 'Academic', 'Financial', 'Personal', 'Other').optional(),
-    tags: Joi.array().items(Joi.string().trim()).optional(),
+    tags: Joi.alternatives().try(
+      Joi.array().items(Joi.string().trim()),
+      Joi.string().trim().allow('')
+    ).optional(),
     category: Joi.string().trim().optional(),
     folder: Joi.string().trim().optional(),
+    folderId: Joi.string().optional().allow('', null),
+    visibility: Joi.string().valid('private', 'public').optional(),
   }),
 
   // Share document
@@ -82,6 +95,22 @@ const schemas = {
     userEmail: Joi.string().email().required(),
     permission: Joi.string().valid('view', 'edit', 'admin').default('view'),
     message: Joi.string().max(500).optional(),
+  }),
+
+  // Initiate video upload (multipart)
+  initiateVideo: Joi.object({
+    fileName: Joi.string().trim().min(1).max(500).required(),
+    mimeType: Joi.string().trim().required(),
+    fileSize: Joi.number().integer().min(1).max(1.5 * 1024 * 1024 * 1024).required(),
+    title: Joi.string().trim().max(255).optional().allow(''),
+    description: Joi.string().trim().max(1000).optional().allow(''),
+    category: Joi.string().trim().optional().allow(''),
+    tags: Joi.alternatives().try(
+      Joi.array().items(Joi.string().trim()),
+      Joi.string().trim().allow('')
+    ).optional(),
+    folderId: Joi.string().optional().allow('', null),
+    folderPath: Joi.string().trim().optional().allow(''),
   }),
 
   // Add comment

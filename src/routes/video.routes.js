@@ -2,6 +2,7 @@ const express = require('express');
 const videoController = require('../controllers/videoController');
 const { protect, restrictTo } = require('../middleware/auth');
 const { uploadLimiter } = require('../middleware/rateLimiter');
+const { validate } = require('../middleware/validator');
 
 const router = express.Router();
 
@@ -9,7 +10,7 @@ const router = express.Router();
 router.use(protect);
 
 // ── Initiate a new resumable multipart upload ──────────────────────────────
-router.post('/initiate', uploadLimiter, videoController.initiateUpload);
+router.post('/initiate', uploadLimiter, validate('initiateVideo'), videoController.initiateUpload);
 
 // ── Active-uploads overview ────────────────────────────────────────────────
 router.get('/active-uploads', videoController.getActiveUploads);
