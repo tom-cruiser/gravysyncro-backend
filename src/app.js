@@ -20,6 +20,7 @@ const commentRoutes = require("./routes/comment.routes");
 const notificationRoutes = require("./routes/notification.routes");
 const adminRoutes = require("./routes/admin.routes");
 const messageRoutes = require("./routes/message.routes");
+const videoRoutes = require("./routes/video.routes");
 
 // Create Express app
 const app = express();
@@ -68,7 +69,7 @@ if (process.env.NODE_ENV === "development") {
 // Rate limiting (disabled in development for performance)
 if (process.env.NODE_ENV === "production") {
   app.use("/api", apiLimiter);
-  app.use(logRequest);
+  // logRequest is a route-level factory, not global middleware
 }
 
 // Health check route
@@ -88,6 +89,7 @@ app.use("/api/v1/comments", commentRoutes);
 app.use("/api/v1/notifications", notificationRoutes);
 app.use("/api/v1/admin", adminRoutes);
 app.use("/api/v1/messages", messageRoutes);
+app.use("/api/v1/videos", videoRoutes);
 
 // Handle undefined routes
 app.all("*", (req, res, next) => {

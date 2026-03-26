@@ -128,6 +128,72 @@ const listFiles = async (prefix) => {
   return s3.listObjectsV2(params).promise();
 };
 
+/**
+ * Create a multipart upload and return the UploadId
+ */
+const createMultipartUpload = async (key, contentType, metadata = {}) => {
+  const params = {
+    Bucket: process.env.WASABI_BUCKET,
+    Key: key,
+    ContentType: contentType,
+    Metadata: metadata,
+    ServerSideEncryption: 'AES256',
+  };
+  return s3.createMultipartUpload(params).promise();
+};
+
+/**
+ * Generate a pre-signed URL so the client can upload a single part directly.
+ * partNumber: 1-based integer.
+ */
+const getUploadPartSignedUrl = (key, uploadId, partNumber, expiresIn = 3600) => {
+  const params = {
+    Bucket: process.env.WASABI_BUCKET,
+    Key: key,
+    UploadId: uploadId,
+    PartNumber: partNumber,
+    Expires: expiresIn,
+  };
+  return s3.getSignedUrl('uploadPart', params);
+};
+
+/**
+ * Complete a multipart upload. parts = [{ PartNumber, ETag }, ...]
+ */
+const completeMultipartUpload = async (key, uploadId, parts) => {
+  const params = {
+    Bucket: process.env.WASABI_BUCKET,
+    Key: key,
+    UploadId: uploadId,
+    MultipartUpload: { Parts: parts },
+  };
+  return s3.completeMultipartUpload(params).promise();
+};
+
+/**
+ * Abort an in-progress multipart upload (cleanup on failure/cancel)
+ */
+const abortMultipartUpload = async (key, uploadId) => {
+  const params = {
+    Bucket: process.env.WASABI_BUCKET,
+    Key: key,
+    UploadId: uploadId,
+  };
+  return s3.abortMultipartUpload(params).promise();
+};
+
+/**
+ * List already-uploaded parts for a multipart upload (for resume)
+ */
+const listParts = async (key, uploadId) => {
+  const params = {
+    Bucket: process.env.WASABI_BUCKET,
+    Key: key,
+    UploadId: uploadId,
+  };
+  return s3.listParts(params).promise();
+};
+
 module.exports = {
   s3,
   uploadFile,
@@ -136,4 +202,9 @@ module.exports = {
   getSignedUrl,
   copyFile,
   listFiles,
+  createMultipartUpload,
+  getUploadPartSignedUrl,
+  completeMultipartUpload,
+  abortMultipartUpload,
+  listParts,
 };
