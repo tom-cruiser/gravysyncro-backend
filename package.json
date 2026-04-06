@@ -8,7 +8,8 @@
     "dev": "nodemon src/server.js",
     "test": "jest --coverage",
     "lint": "eslint src/**/*.js",
-    "migrate": "node src/scripts/migrate.js"
+    "migrate": "node src/scripts/migrate.js",
+    "migrate:workspace-members": "node src/scripts/backfillWorkspaceMembers.js"
   },
   "keywords": [
     "document-management",
@@ -42,6 +43,7 @@
     "nodemailer": "^6.9.7",
     "pug": "^3.0.2",
     "qrcode": "^1.5.3",
+    "socket.io": "^4.8.1",
     "sharp": "^0.33.1",
     "speakeasy": "^2.0.0",
     "stripe": "^14.10.0",

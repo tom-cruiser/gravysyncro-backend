@@ -11,7 +11,7 @@ const schemas = {
     password: Joi.string().min(8).max(128).required()
       .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/)
       .message('Password must contain at least one lowercase letter, one uppercase letter, and one number'),
-    role: Joi.string().valid('Student', 'Notary', 'Teacher', 'Lawyer', 'Professional').default('Professional'),
+    role: Joi.string().valid('Student', 'Notary', 'Teacher', 'Lawyer', 'Professional', 'Admin', 'Manager', 'Member', 'Guest', 'Client').default('Professional'),
     tenantId: Joi.string().optional(),
   }),
 
@@ -73,6 +73,7 @@ const schemas = {
     folderId: Joi.string().optional().allow('', null),
     folderPath: Joi.string().trim().optional().allow(''),
     relativePath: Joi.string().trim().optional().allow(''),
+    workspaceId: Joi.string().optional().allow('', null),
   }),
 
   // Update document
@@ -88,6 +89,7 @@ const schemas = {
     folder: Joi.string().trim().optional(),
     folderId: Joi.string().optional().allow('', null),
     visibility: Joi.string().valid('private', 'public').optional(),
+    workspaceId: Joi.string().optional().allow('', null),
   }),
 
   // Share document
@@ -115,14 +117,58 @@ const schemas = {
 
   // Add comment
   addComment: Joi.object({
-    text: Joi.string().trim().min(1).max(1000).required(),
+    text: Joi.string().trim().min(1).max(1000).optional(),
+    content: Joi.string().trim().min(1).max(1000).optional(),
     parentComment: Joi.string().optional(),
-  }),
+    parentId: Joi.string().optional(),
+  }).or('text', 'content'),
 
   // Update comment
   updateComment: Joi.object({
-    text: Joi.string().trim().min(1).max(1000).required(),
+    text: Joi.string().trim().min(1).max(1000).optional(),
+    content: Joi.string().trim().min(1).max(1000).optional(),
+  }).or('text', 'content'),
+
+  createWorkspace: Joi.object({
+    name: Joi.string().trim().min(2).max(120).required(),
+    description: Joi.string().trim().max(1000).optional().allow(''),
+    clientName: Joi.string().trim().max(120).optional().allow(''),
+    memberIds: Joi.array().items(Joi.string()).optional(),
+    guestIds: Joi.array().items(Joi.string()).optional(),
   }),
+
+  inviteWorkspaceMembers: Joi.object({
+    memberIds: Joi.array().items(Joi.string()).optional(),
+    guestIds: Joi.array().items(Joi.string()).optional(),
+  }),
+
+  updateTerminology: Joi.object({
+    workspaceLabel: Joi.string().trim().min(2).max(40).required(),
+  }),
+
+  addWorkspaceInternalMember: Joi.object({
+    userId: Joi.string().required(),
+    role: Joi.string().valid('Contributor', 'Guest', 'Workspace Manager').default('Contributor'),
+  }),
+
+  addWorkspaceGuestMember: Joi.object({
+    email: Joi.string().email().required(),
+    role: Joi.string().valid('Contributor', 'Guest').default('Guest'),
+  }),
+
+  updateWorkspaceMemberRole: Joi.object({
+    role: Joi.string().valid('Contributor', 'Guest').required(),
+  }),
+
+  updateBrandingSettings: Joi.object({
+    workspaceLabel: Joi.string().trim().min(2).max(40).optional(),
+    projectLabel: Joi.string().trim().min(2).max(40).optional(),
+    caseLabel: Joi.string().trim().min(2).max(40).optional(),
+    jobLabel: Joi.string().trim().min(2).max(40).optional(),
+    logo: Joi.string().pattern(/^data:image\/png;base64,/).optional(),
+    primaryColor: Joi.string().pattern(/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/).optional(),
+    secondaryColor: Joi.string().pattern(/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/).optional(),
+  }).min(1),
 };
 
 /**

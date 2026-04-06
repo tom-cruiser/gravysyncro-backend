@@ -14,6 +14,12 @@ router
   .get(commentController.getComments)
   .post(validate('addComment'), commentController.addComment);
 
+// Comment routes for a video
+router
+  .route('/video/:videoId')
+  .get(commentController.getComments)
+  .post(validate('addComment'), commentController.addComment);
+
 // Specific comment routes
 router
   .route('/:commentId')

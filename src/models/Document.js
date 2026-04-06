@@ -166,6 +166,12 @@ const documentSchema = new mongoose.Schema({
   },
   
   // Folder/Organization
+  workspaceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Workspace',
+    index: true,
+    default: null,
+  },
   folder: {
     type: String,
     default: 'root',
@@ -245,6 +251,7 @@ documentSchema.index({ tenantId: 1, isShared: 1 });
 documentSchema.index({ tenantId: 1, type: 1 });
 documentSchema.index({ tenantId: 1, createdAt: -1 });
 documentSchema.index({ tenantId: 1, tags: 1 });
+documentSchema.index({ tenantId: 1, workspaceId: 1, createdAt: -1 });
 documentSchema.index({ 'sharedWith.user': 1 });
 documentSchema.index({ tenantId: 1, folderPath: 1, createdAt: -1 });
 

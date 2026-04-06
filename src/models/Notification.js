@@ -24,6 +24,11 @@ const notificationSchema = new mongoose.Schema(
         "document_shared",
         "comment_added",
         "document_uploaded",
+        "workspace_uploaded",
+        "workspace_comment",
+        "workspace_archived",
+        "workspace_reopened",
+        "workspace_assigned",
         "mention",
         "system",
         "security",
@@ -45,6 +50,10 @@ const notificationSchema = new mongoose.Schema(
     relatedDocument: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Document",
+    },
+    relatedWorkspace: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Workspace",
     },
     relatedUser: {
       type: mongoose.Schema.Types.ObjectId,

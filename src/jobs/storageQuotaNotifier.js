@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const User = require('../models/User');
 const { sendStorageQuotaWarningEmail } = require('../services/emailService');
+const { getTenantStorageMap } = require('../utils/tenantStorage');
 
 const GB = 1024 * 1024 * 1024;
 
@@ -24,21 +25,35 @@ const notifyStorageQuota = async () => {
     'preferences.notifications.email': true,
     email: { $exists: true, $ne: null },
   }).select(
-    'firstName email storageUsed storageLimit storageWarningLastSentAt storageWarningLastUsagePercent preferences'
+    'tenantId firstName email storageUsed storageLimit storageWarningLastSentAt storageWarningLastUsagePercent preferences'
   );
 
-  for (const user of users) {
-    const storageLimit = Number(user.storageLimit || 0);
-    const storageUsed = Number(user.storageUsed || 0);
+  const tenantIds = [...new Set(users.map((user) => user.tenantId).filter(Boolean))];
+  const tenantStorageMap = await getTenantStorageMap(tenantIds);
+
+  const usersByTenant = users.reduce((map, user) => {
+    const tenantUsers = map.get(user.tenantId) || [];
+    tenantUsers.push(user);
+    map.set(user.tenantId, tenantUsers);
+    return map;
+  }, new Map());
+
+  for (const [tenantId, tenantUsers] of usersByTenant.entries()) {
+    const tenantStorage = tenantStorageMap.get(tenantId);
+    if (!tenantStorage) continue;
+
+    const representativeUser = tenantUsers[0];
+    const storageLimit = Number(tenantStorage.storageLimit || 0);
+    const storageUsed = Number(tenantStorage.storageUsed || 0);
 
     if (storageLimit <= 0) continue;
 
     const usagePercent = roundToTwo((storageUsed / storageLimit) * 100);
 
-    if (!shouldSendWarning(user, usagePercent)) {
-      if (usagePercent < 75 && (user.storageWarningLastSentAt || user.storageWarningLastUsagePercent)) {
-        await User.updateOne(
-          { _id: user._id },
+    if (!shouldSendWarning(representativeUser, usagePercent)) {
+      if (usagePercent < 75 && (representativeUser.storageWarningLastSentAt || representativeUser.storageWarningLastUsagePercent)) {
+        await User.updateMany(
+          { tenantId },
           {
             $set: { storageWarningLastUsagePercent: usagePercent },
             $unset: { storageWarningLastSentAt: 1 },
@@ -53,15 +68,17 @@ const notifyStorageQuota = async () => {
     const remainingGb = roundToTwo(Math.max(storageLimit - storageUsed, 0) / GB);
 
     try {
-      await sendStorageQuotaWarningEmail(user, {
-        usagePercent,
-        usedGb,
-        totalGb,
-        remainingGb,
-      });
+      await Promise.all(
+        tenantUsers.map((user) => sendStorageQuotaWarningEmail(user, {
+          usagePercent,
+          usedGb,
+          totalGb,
+          remainingGb,
+        }))
+      );
 
-      await User.updateOne(
-        { _id: user._id },
+      await User.updateMany(
+        { tenantId },
         {
           $set: {
             storageWarningLastSentAt: new Date(),
@@ -71,7 +88,7 @@ const notifyStorageQuota = async () => {
       );
     } catch (error) {
       console.error(
-        `[storage-quota-notifier] Failed to send warning to ${user.email}:`,
+        `[storage-quota-notifier] Failed to send warning to tenant ${tenantId}:`,
         error.message
       );
     }

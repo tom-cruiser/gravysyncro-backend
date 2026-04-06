@@ -2,6 +2,7 @@ const Notification = require('../models/Notification');
 const mongoose = require('mongoose');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
+const { emitNotification } = require('../config/socket');
 
 /**
  * Get all notifications for current user
@@ -179,6 +180,7 @@ exports.getUnreadCount = catchAsync(async (req, res, next) => {
 exports.createNotification = async (data) => {
   try {
     const notification = await Notification.create(data);
+    emitNotification(data.tenantId, data.user, notification);
     return notification;
   } catch (error) {
     console.error('Error creating notification:', error);

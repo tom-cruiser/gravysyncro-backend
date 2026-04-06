@@ -5,6 +5,8 @@ const Notification = require('../models/Notification');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const { STORAGE_PLAN_GB_OPTIONS, gbToBytes } = require('../utils/storagePlans');
+const { getTenantStorageMap, getTenantStorageSummary, applyTenantStoragePlan } = require('../utils/tenantStorage');
+const { emitTenantEvent } = require('../config/socket');
 
 /**
  * Get admin dashboard statistics
@@ -112,20 +114,26 @@ exports.getAllUsers = catchAsync(async (req, res, next) => {
     User.countDocuments(query)
   ]);
 
+  const tenantStorageMap = await getTenantStorageMap(users.map((user) => user.tenantId));
+
   const usersWithStorage = users.map((user) => {
-    const storageUsed = Number(user.storageUsed || 0);
-    const storageLimit = Number(user.storageLimit || 0);
-    const storageUsedPercentage = storageLimit > 0
-      ? Number(((storageUsed / storageLimit) * 100).toFixed(2))
-      : 0;
+    const tenantStorage = tenantStorageMap.get(user.tenantId) || {
+      storageUsed: Number(user.storageUsed || 0),
+      storageLimit: Number(user.storageLimit || 0),
+      storagePlanGb: user.storagePlanGb || 50,
+      storageRemaining: Math.max(Number(user.storageLimit || 0) - Number(user.storageUsed || 0), 0),
+      storageUsedPercentage: Number(user.storageLimit || 0) > 0
+        ? Number(((Number(user.storageUsed || 0) / Number(user.storageLimit || 0)) * 100).toFixed(2))
+        : 0,
+    };
 
     return {
       ...user,
-      storageUsed,
-      storageLimit,
-      storagePlanGb: user.storagePlanGb || 50,
-      storageRemaining: Math.max(storageLimit - storageUsed, 0),
-      storageUsedPercentage,
+      storageUsed: tenantStorage.storageUsed,
+      storageLimit: tenantStorage.storageLimit,
+      storagePlanGb: tenantStorage.storagePlanGb,
+      storageRemaining: tenantStorage.storageRemaining,
+      storageUsedPercentage: tenantStorage.storageUsedPercentage,
     };
   });
 
@@ -149,6 +157,7 @@ exports.getAllUsers = catchAsync(async (req, res, next) => {
  */
 exports.getAllTenants = catchAsync(async (req, res, next) => {
   const tenantIds = await User.distinct('tenantId');
+  const tenantStorageMap = await getTenantStorageMap(tenantIds);
 
   const tenants = await Promise.all(
     tenantIds.map(async (tenantId) => {
@@ -166,14 +175,29 @@ exports.getAllTenants = catchAsync(async (req, res, next) => {
         .select('firstName lastName email role createdAt')
         .limit(5);
 
+      const primaryUser = users[0] || null;
+      const storage = tenantStorageMap.get(tenantId) || {
+        storageUsed: 0,
+        storageLimit: gbToBytes(50),
+        storagePlanGb: 50,
+        storageRemaining: gbToBytes(50),
+        storageUsedPercentage: 0,
+      };
+
       return {
         tenantId,
+        primaryUser,
         userCount,
         documentCount,
         activeUsers,
         recentActivity,
         users,
-        createdAt: users[0]?.createdAt
+        createdAt: primaryUser?.createdAt,
+        storageUsed: storage.storageUsed,
+        storageLimit: storage.storageLimit,
+        storagePlanGb: storage.storagePlanGb,
+        storageRemaining: storage.storageRemaining,
+        storageUsedPercentage: storage.storageUsedPercentage,
       };
     })
   );
@@ -587,8 +611,7 @@ exports.resetUserPassword = catchAsync(async (req, res, next) => {
 /**
  * Update user storage limit plan (admin only)
  */
-exports.updateUserStorageLimit = catchAsync(async (req, res, next) => {
-  const { userId } = req.params;
+const updateEnterpriseStorage = async ({ tenantId, req, res, next }) => {
   const { storagePlanGb } = req.body;
   const normalizedPlan = Number(storagePlanGb);
 
@@ -601,27 +624,18 @@ exports.updateUserStorageLimit = catchAsync(async (req, res, next) => {
     );
   }
 
-  const user = await User.findById(userId);
-
-  if (!user) {
-    return next(new AppError('User not found', 404));
-  }
-
-  const oldPlanGb = user.storagePlanGb || 50;
-  user.storagePlanGb = normalizedPlan;
-  user.storageLimit = gbToBytes(normalizedPlan);
-
-  await user.save();
+  const tenantStorageBefore = await getTenantStorageSummary(tenantId);
+  const storageLimit = await applyTenantStoragePlan(tenantId, normalizedPlan);
 
   await ActivityLog.create({
-    tenantId: user.tenantId,
+    tenantId,
     user: req.user._id,
     action: 'settings_change',
-    resourceType: 'user',
-    resourceId: user._id,
+    resourceType: 'tenant',
+    resourceId: tenantId,
     details: {
-      action: 'storage_plan_updated',
-      oldPlanGb,
+      action: 'enterprise_storage_updated',
+      oldPlanGb: tenantStorageBefore.storagePlanGb || 50,
       newPlanGb: normalizedPlan,
       updatedBy: req.user.email,
     },
@@ -630,22 +644,62 @@ exports.updateUserStorageLimit = catchAsync(async (req, res, next) => {
     status: 'success',
   });
 
-  const storageUsedPercentage = user.storageLimit > 0
-    ? Number(((user.storageUsed / user.storageLimit) * 100).toFixed(2))
-    : 0;
+  const tenantStorage = await getTenantStorageSummary(tenantId);
+
+  emitTenantEvent(tenantId, 'tenant:storage-updated', {
+    tenantId,
+    storagePlanGb: normalizedPlan,
+    storageLimit,
+    storageUsed: tenantStorage.storageUsed,
+    storageUsedPercentage: tenantStorage.storageUsedPercentage,
+    updatedAt: new Date().toISOString(),
+  });
 
   res.status(200).json({
     status: 'success',
-    message: `Storage plan updated to ${normalizedPlan} GB`,
+    message: `Enterprise storage plan updated to ${normalizedPlan} GB`,
     data: {
-      user: {
-        _id: user._id,
-        storagePlanGb: user.storagePlanGb,
-        storageUsed: user.storageUsed,
-        storageLimit: user.storageLimit,
-        storageUsedPercentage,
+      tenant: {
+        tenantId,
+        storagePlanGb: normalizedPlan,
+        storageUsed: tenantStorage.storageUsed,
+        storageLimit,
+        storageUsedPercentage: tenantStorage.storageUsedPercentage,
       },
     },
+  });
+};
+
+exports.updateUserStorageLimit = catchAsync(async (req, res, next) => {
+  const { userId } = req.params;
+  const user = await User.findById(userId);
+
+  if (!user) {
+    return next(new AppError('User not found', 404));
+  }
+
+  return updateEnterpriseStorage({
+    tenantId: user.tenantId,
+    storagePlanGb: req.body.storagePlanGb,
+    req,
+    res,
+    next,
+  });
+});
+
+exports.updateTenantStorageLimit = catchAsync(async (req, res, next) => {
+  const { tenantId } = req.params;
+
+  if (!tenantId) {
+    return next(new AppError('Tenant ID is required', 400));
+  }
+
+  return updateEnterpriseStorage({
+    tenantId,
+    storagePlanGb: req.body.storagePlanGb,
+    req,
+    res,
+    next,
   });
 });
 

@@ -1,18 +1,48 @@
 const User = require('../models/User');
+const Tenant = require('../models/Tenant');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const { log } = require('../middleware/activityLogger');
+const { getTenantStorageSummary } = require('../utils/tenantStorage');
 
 /**
  * Get current user profile
  */
 exports.getProfile = catchAsync(async (req, res, next) => {
-  const user = await User.findById(req.user._id);
+  const [user, tenantStorage, tenant] = await Promise.all([
+    User.findById(req.user._id),
+    getTenantStorageSummary(req.user.tenantId),
+    Tenant.findOne({ tenantId: req.user.tenantId }).select('subscription.plan subscription.status'),
+  ]);
+
+  if (!user) {
+    return next(new AppError('User not found', 404));
+  }
+
+  const effectiveUser = {
+    ...user.toObject(),
+    storageUsed: tenantStorage.storageUsed,
+    storageLimit: tenantStorage.storageLimit,
+    storagePlanGb: tenantStorage.storagePlanGb,
+    storageRemaining: tenantStorage.storageRemaining,
+    storageUsedPercentage: tenantStorage.storageUsedPercentage,
+    subscription: {
+      plan: tenant?.subscription?.plan || 'enterprise',
+      status: tenant?.subscription?.status || 'active',
+    },
+  };
 
   res.status(200).json({
     status: 'success',
     data: {
-      user,
+      user: effectiveUser,
+      tenantStorage: {
+        storageUsed: tenantStorage.storageUsed,
+        storageLimit: tenantStorage.storageLimit,
+        storagePlanGb: tenantStorage.storagePlanGb,
+        storageRemaining: tenantStorage.storageRemaining,
+        storageUsedPercentage: tenantStorage.storageUsedPercentage,
+      },
     },
   });
 });

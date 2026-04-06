@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Notification = require('../models/Notification');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
+const { isEnterpriseAdmin } = require('../utils/workspaceAccess');
 
 /**
  * Create a new support message (User)
@@ -154,7 +155,7 @@ exports.getMessageById = catchAsync(async (req, res, next) => {
   }
 
   // Check if user is admin or message owner
-  if (req.user.role !== 'Admin' && message.user._id.toString() !== req.user._id.toString()) {
+  if (!isEnterpriseAdmin(req.user) && message.user._id.toString() !== req.user._id.toString()) {
     return next(new AppError('You do not have permission to view this message', 403));
   }
 

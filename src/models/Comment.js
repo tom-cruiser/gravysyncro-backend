@@ -12,8 +12,15 @@ const commentSchema = new mongoose.Schema({
   document: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Document',
-    required: true,
     index: true,
+  },
+
+  // Video reference (for video conversation threads)
+  video: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Video',
+    index: true,
+    default: null,
   },
   
   // Author
@@ -68,6 +75,19 @@ const commentSchema = new mongoose.Schema({
 
 // Indexes
 commentSchema.index({ tenantId: 1, document: 1, createdAt: -1 });
+commentSchema.index({ tenantId: 1, video: 1, createdAt: -1 });
 commentSchema.index({ author: 1 });
+
+// Ensure comment always belongs to exactly one resource type.
+commentSchema.pre('validate', function(next) {
+  const hasDocument = !!this.document;
+  const hasVideo = !!this.video;
+
+  if ((hasDocument && hasVideo) || (!hasDocument && !hasVideo)) {
+    return next(new Error('Comment must reference either a document or a video.'));
+  }
+
+  next();
+});
 
 module.exports = mongoose.model('Comment', commentSchema);

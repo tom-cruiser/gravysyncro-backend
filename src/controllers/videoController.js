@@ -4,6 +4,8 @@ const User = require('../models/User');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const { log } = require('../middleware/activityLogger');
+const { isEnterpriseAdmin } = require('../utils/workspaceAccess');
+const { getTenantStorageSummary } = require('../utils/tenantStorage');
 const {
   createMultipartUpload,
   getUploadPartSignedUrl,
@@ -98,15 +100,18 @@ exports.initiateUpload = catchAsync(async (req, res, next) => {
   }
 
   // Check storage quota
-  const latestUser = await User.findById(req.user._id).select('storageUsed storageLimit');
+  const [latestUser, tenantStorage] = await Promise.all([
+    User.findById(req.user._id).select('storageUsed storageLimit'),
+    getTenantStorageSummary(req.user.tenantId),
+  ]);
   if (!latestUser) return next(new AppError('User not found.', 404));
 
-  const projectedUsage = Number(latestUser.storageUsed || 0) + fileSizeNum;
-  if (projectedUsage > Number(latestUser.storageLimit || 0)) {
-    const available = Math.max(Number(latestUser.storageLimit || 0) - Number(latestUser.storageUsed || 0), 0);
+  const projectedUsage = Number(tenantStorage.storageUsed || 0) + fileSizeNum;
+  if (projectedUsage > Number(tenantStorage.storageLimit || 0)) {
+    const available = Math.max(Number(tenantStorage.storageLimit || 0) - Number(tenantStorage.storageUsed || 0), 0);
     return next(
       new AppError(
-        `Storage limit reached. Available: ${(available / (1024 * 1024)).toFixed(2)} MB.`,
+        `Enterprise storage limit reached. Available: ${(available / (1024 * 1024)).toFixed(2)} MB.`,
         403,
       ),
     );
@@ -335,7 +340,7 @@ exports.getAllVideos = catchAsync(async (req, res, next) => {
   if (folderId === 'null') query.folderId = null;
   else if (folderId) query.folderId = folderId;
 
-  if (req.user.role !== 'admin') {
+  if (!isEnterpriseAdmin(req.user)) {
     query.$or = [
       ...(query.$or || []),
       { uploadedBy: req.user._id },
@@ -377,9 +382,9 @@ exports.getVideo = catchAsync(async (req, res, next) => {
   });
 
   if (!video) return next(new AppError('Video not found.', 404));
-  if (!video.hasAccess(req.user._id, 'view')) {
-    return next(new AppError('Not authorised to view this video.', 403));
-  }
+
+  // Video conversation flow is tenant-collaborative.
+  // If the video belongs to the same tenant, allow access.
 
   const url = getSignedUrl(video.storageKey, { expiresIn: 7200, disposition: 'inline' });
 
@@ -405,9 +410,8 @@ exports.downloadVideo = catchAsync(async (req, res, next) => {
   });
 
   if (!video) return next(new AppError('Video not found.', 404));
-  if (!video.hasAccess(req.user._id, 'view')) {
-    return next(new AppError('Not authorised.', 403));
-  }
+
+  // Same-tenant collaborative access applies to downloads as well.
 
   const url = getSignedUrl(video.storageKey, {
     expiresIn: 3600,
@@ -456,7 +460,7 @@ exports.permanentDeleteVideo = catchAsync(async (req, res, next) => {
 
   if (!video) return next(new AppError('Video not found.', 404));
 
-  if (req.user.role !== 'admin' && video.uploadedBy.toString() !== req.user._id.toString()) {
+  if (!isEnterpriseAdmin(req.user) && video.uploadedBy.toString() !== req.user._id.toString()) {
     return next(new AppError('Only admin or the owner can permanently delete a video.', 403));
   }
 

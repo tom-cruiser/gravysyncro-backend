@@ -20,6 +20,7 @@ router.patch('/users/:userId/activate', adminController.activateUser);
 router.patch('/users/:userId/role', adminController.updateUserRole);
 router.patch('/users/:userId/password', adminController.resetUserPassword);
 router.patch('/users/:userId/storage-limit', adminController.updateUserStorageLimit);
+router.patch('/tenants/:tenantId/storage-limit', adminController.updateTenantStorageLimit);
 router.delete('/users/:userId', adminController.deleteUser);
 
 // Tenant Management

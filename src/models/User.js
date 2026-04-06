@@ -40,7 +40,21 @@ const userSchema = new mongoose.Schema(
     // Role Management
     role: {
       type: String,
-      enum: ["Student", "Notary", "Teacher", "Lawyer", "Professional", "Admin"],
+      enum: [
+        'Student',
+        'Notary',
+        'Teacher',
+        'Lawyer',
+        'Professional',
+        'Admin',
+        'Manager',
+        'Member',
+        'Guest',
+        'Client',
+        'Enterprise Admin',
+        'Workspace Manager',
+        'Contributor',
+      ],
       default: "Professional",
     },
 

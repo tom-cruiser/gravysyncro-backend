@@ -29,6 +29,24 @@ const tenantSchema = new mongoose.Schema({
   
   // Settings
   settings: {
+    terminology: {
+      workspaceLabel: {
+        type: String,
+        default: 'Workspaces',
+      },
+      projectLabel: {
+        type: String,
+        default: 'Projects',
+      },
+      caseLabel: {
+        type: String,
+        default: 'Cases',
+      },
+      jobLabel: {
+        type: String,
+        default: 'Jobs',
+      },
+    },
     maxUsers: {
       type: Number,
       default: 50,
