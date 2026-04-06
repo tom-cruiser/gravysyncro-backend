@@ -9,6 +9,7 @@ const { log } = require('../middleware/activityLogger');
 const { sendDocumentSharedEmail } = require('../services/emailService');
 const { createNotification } = require('./notificationController');
 const { getTenantStorageSummary } = require('../utils/tenantStorage');
+const { gbToBytes } = require('../utils/storagePlans');
 const sharp = require('sharp');
 const {
   isEnterpriseAdmin,
@@ -1036,19 +1037,53 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
     .sort('-createdAt')
     .limit(6);
 
-  const [tenantStorage, tenantUsers] = await Promise.all([
+  const [tenantStorage, tenantUsers, tenantDocumentUsage] = await Promise.all([
     getTenantStorageSummary(req.user.tenantId),
     User.find({ tenantId: req.user.tenantId, isActive: true })
       .select('firstName lastName email role storageUsed')
       .sort({ storageUsed: -1, firstName: 1 })
       .limit(50),
+    Document.aggregate([
+      {
+        $match: {
+          tenantId: req.user.tenantId,
+          isDeleted: false,
+        },
+      },
+      {
+        $group: {
+          _id: {
+            $ifNull: ['$uploadedBy', '$owner'],
+          },
+          storageUsed: {
+            $sum: {
+              $ifNull: ['$size', '$fileSize'],
+            },
+          },
+        },
+      },
+    ]),
   ]);
 
-  const tenantLimit = Number(tenantStorage.storageLimit || 0);
-  const tenantUsed = Number(tenantStorage.storageUsed || 0);
+  const usageByUserId = new Map(
+    (tenantDocumentUsage || []).map((entry) => [
+      String(entry._id || ''),
+      Number(entry.storageUsed || 0),
+    ]),
+  );
+
+  const tenantUsed = (tenantDocumentUsage || []).reduce(
+    (total, entry) => total + Number(entry.storageUsed || 0),
+    0,
+  );
+
+  const planLimitFallback = gbToBytes(Number(tenantStorage.storagePlanGb || 50));
+  const tenantLimit = Number(tenantStorage.storageLimit || 0) > 0
+    ? Number(tenantStorage.storageLimit)
+    : planLimitFallback;
 
   const spaceUsers = tenantUsers.map((spaceUser) => {
-    const storageUsed = Number(spaceUser.storageUsed || 0);
+    const storageUsed = usageByUserId.get(String(spaceUser._id)) || 0;
     return {
       _id: spaceUser._id,
       firstName: spaceUser.firstName,
@@ -1072,8 +1107,10 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
       spaceUsage: {
         storageUsed: tenantUsed,
         storageLimit: tenantLimit,
-        storageRemaining: Number(tenantStorage.storageRemaining || 0),
-        storageUsedPercentage: Number(tenantStorage.storageUsedPercentage || 0),
+        storageRemaining: Math.max(tenantLimit - tenantUsed, 0),
+        storageUsedPercentage: tenantLimit > 0
+          ? Number(((tenantUsed / tenantLimit) * 100).toFixed(2))
+          : 0,
       },
       spaceUsers,
     },
