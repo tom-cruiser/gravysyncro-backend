@@ -90,6 +90,21 @@ const canAccessWorkspace = async (req, workspaceId) => {
 
 const canManageWorkspace = (req, workspace) => isEnterpriseAdmin(req.user) || workspace?.manager?.toString() === req.user?._id?.toString();
 
+const canInviteWorkspaceMembers = async (req, workspaceId) => {
+  if (isEnterpriseAdmin(req.user)) {
+    return true;
+  }
+
+  const membership = await WorkspaceMember.findOne({
+    tenantId: req.user.tenantId,
+    workspace: workspaceId,
+    user: req.user._id,
+    isActive: true,
+  }).lean();
+
+  return !!membership && ['Workspace Manager', 'Contributor'].includes(membership.role);
+};
+
 const canWriteWorkspace = async (req, workspaceId) => {
   if (isEnterpriseAdmin(req.user)) {
     return true;
@@ -139,6 +154,7 @@ module.exports = {
   getAccessibleWorkspaceIds,
   canAccessWorkspace,
   canManageWorkspace,
+  canInviteWorkspaceMembers,
   canWriteWorkspace,
   canViewWorkspaceDocument,
   canMutateWorkspaceDocument,

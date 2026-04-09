@@ -16,6 +16,7 @@ const {
   syncWorkspaceMembers,
   getAccessibleWorkspaceIds,
   canManageWorkspace,
+  canInviteWorkspaceMembers,
 } = require('../utils/workspaceAccess');
 
 const ensureWorkspaceAccess = async (req, workspaceId, next) => {
@@ -128,8 +129,9 @@ exports.inviteMembers = catchAsync(async (req, res, next) => {
   const workspace = await ensureWorkspaceAccess(req, req.params.workspaceId, next);
   if (!workspace) return;
 
-  if (!canManageWorkspace(req, workspace)) {
-    return next(new AppError('Only managers can invite members', 403));
+  const canInvite = await canInviteWorkspaceMembers(req, workspace._id);
+  if (!canInvite) {
+    return next(new AppError('Only contributors or managers can invite members', 403));
   }
 
   const { memberIds = [], guestIds = [] } = req.body;
@@ -315,6 +317,19 @@ const ensureWorkspaceManageAccess = async (req, workspaceId, next) => {
   return workspace;
 };
 
+const ensureWorkspaceInviteAccess = async (req, workspaceId, next) => {
+  const workspace = await ensureWorkspaceAccess(req, workspaceId, next);
+  if (!workspace) return null;
+
+  const canInvite = await canInviteWorkspaceMembers(req, workspaceId);
+  if (!canInvite) {
+    next(new AppError('Only contributors or managers can invite workspace members', 403));
+    return null;
+  }
+
+  return workspace;
+};
+
 exports.getWorkspaceMembers = catchAsync(async (req, res, next) => {
   const workspace = await ensureWorkspaceAccess(req, req.params.workspaceId, next);
   if (!workspace) return;
@@ -343,7 +358,7 @@ exports.getWorkspaceMembers = catchAsync(async (req, res, next) => {
 });
 
 exports.addInternalMember = catchAsync(async (req, res, next) => {
-  const workspace = await ensureWorkspaceManageAccess(req, req.params.workspaceId, next);
+  const workspace = await ensureWorkspaceInviteAccess(req, req.params.workspaceId, next);
   if (!workspace) return;
 
   const role = toRoleValue(req.body.role || 'Contributor');
@@ -389,7 +404,7 @@ exports.addInternalMember = catchAsync(async (req, res, next) => {
 });
 
 exports.addGuestMember = catchAsync(async (req, res, next) => {
-  const workspace = await ensureWorkspaceManageAccess(req, req.params.workspaceId, next);
+  const workspace = await ensureWorkspaceInviteAccess(req, req.params.workspaceId, next);
   if (!workspace) return;
 
   const role = toRoleValue(req.body.role || 'Guest');
