@@ -26,6 +26,28 @@ const resolveWasabiEndpoint = () => {
   return configuredEndpoint;
 };
 
+const sanitizeMetadata = (metadata = {}) =>
+  Object.entries(metadata || {}).reduce((acc, [rawKey, rawValue]) => {
+    const key = String(rawKey || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+
+    if (!key) return acc;
+
+    const value = String(rawValue ?? '')
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^\x20-\x7E]/g, '')
+      .trim()
+      .slice(0, 1024);
+
+    if (!value) return acc;
+    acc[key] = value;
+    return acc;
+  }, {});
+
 // Configure Wasabi S3
 const s3 = new AWS.S3({
   endpoint: resolveWasabiEndpoint(),
@@ -132,14 +154,38 @@ const listFiles = async (prefix) => {
  * Create a multipart upload and return the UploadId
  */
 const createMultipartUpload = async (key, contentType, metadata = {}) => {
+  const safeMetadata = sanitizeMetadata(metadata);
   const params = {
     Bucket: process.env.WASABI_BUCKET,
     Key: key,
     ContentType: contentType,
-    Metadata: metadata,
     ServerSideEncryption: 'AES256',
   };
-  return s3.createMultipartUpload(params).promise();
+
+  if (Object.keys(safeMetadata).length > 0) {
+    params.Metadata = safeMetadata;
+  }
+
+  try {
+    return await s3.createMultipartUpload(params).promise();
+  } catch (error) {
+    const isSignatureError =
+      error?.code === 'SignatureDoesNotMatch' ||
+      /request signature/i.test(String(error?.message || ''));
+
+    if (!isSignatureError) {
+      throw error;
+    }
+
+    const fallbackParams = {
+      Bucket: process.env.WASABI_BUCKET,
+      Key: key,
+      ContentType: contentType,
+      ServerSideEncryption: 'AES256',
+    };
+
+    return s3.createMultipartUpload(fallbackParams).promise();
+  }
 };
 
 /**

@@ -62,6 +62,17 @@ const countActiveUploads = (userId) =>
     isDeleted: false,
   });
 
+const normalizeStorageFileName = (name = 'video') => {
+  const cleaned = String(name)
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  return cleaned || `video-${Date.now()}`;
+};
+
 // ─── Initiate upload ──────────────────────────────────────────────────────────
 /**
  * POST /api/v1/videos/initiate
@@ -126,13 +137,31 @@ exports.initiateUpload = catchAsync(async (req, res, next) => {
   }
 
   const ext = fileName.split('.').pop().toLowerCase();
-  const storageKey = `${req.user.tenantId}/videos/${Date.now()}-${fileName.replace(/\s+/g, '_')}`;
+  const safeFileName = normalizeStorageFileName(fileName);
+  const storageKey = `${req.user.tenantId}/videos/${Date.now()}-${safeFileName}`;
 
   // Create S3 multipart upload
-  const multipart = await createMultipartUpload(storageKey, mimeType, {
-    originalName: fileName,
-    uploadedBy: req.user._id.toString(),
-  });
+  let multipart;
+  try {
+    multipart = await createMultipartUpload(storageKey, mimeType, {
+      originalName: fileName,
+      uploadedBy: req.user._id.toString(),
+    });
+  } catch (err) {
+    console.error('❌ Wasabi multipart upload failed:', {
+      error: err.message,
+      code: err.code,
+      storageKey,
+      fileSize: fileSizeNum,
+      fileName,
+    });
+    return next(
+      new AppError(
+        `Failed to initiate upload with storage service. ${err.message || 'Please check your storage configuration.'}`,
+        500,
+      ),
+    );
+  }
 
   const totalParts = Math.ceil(fileSizeNum / PART_SIZE);
 

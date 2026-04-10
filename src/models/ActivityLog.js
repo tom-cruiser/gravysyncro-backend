@@ -38,13 +38,18 @@ const activityLogSchema = new mongoose.Schema({
       'comment_delete',
       'permission_change',
       'settings_change',
+      'video_upload',
+      'video_view',
+      'video_download',
+      'video_delete',
+      'video_permanent_delete',
     ],
   },
   
   // Resource affected
   resourceType: {
     type: String,
-    enum: ['user', 'document', 'comment', 'tenant', 'system'],
+    enum: ['user', 'document', 'comment', 'tenant', 'system', 'video'],
   },
   resourceId: {
     type: mongoose.Schema.Types.ObjectId,

@@ -25,6 +25,11 @@ process.on('uncaughtException', (err) => {
 connectDB();
 
 const server = http.createServer(app);
+
+// Increase timeout for file uploads (5 minutes for larger files)
+server.timeout = 5 * 60 * 1000;
+server.keepAliveTimeout = 65 * 1000;
+
 const io = new Server(server, {
   cors: {
     origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
