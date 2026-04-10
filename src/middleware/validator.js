@@ -111,6 +111,7 @@ const schemas = {
       Joi.array().items(Joi.string().trim()),
       Joi.string().trim().allow('')
     ).optional(),
+    workspaceId: Joi.string().optional().allow('', null),
     folderId: Joi.string().optional().allow('', null),
     folderPath: Joi.string().trim().optional().allow(''),
   }),

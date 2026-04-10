@@ -49,6 +49,12 @@ const videoSchema = new mongoose.Schema({
   }],
 
   // Organisation
+  workspaceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Workspace',
+    index: true,
+    default: null,
+  },
   folderId: { type: String, default: null },
   folderPath: { type: String, default: '' },
   category: { type: String, default: 'General' },
@@ -84,6 +90,7 @@ const videoSchema = new mongoose.Schema({
 });
 
 videoSchema.index({ tenantId: 1, owner: 1 });
+videoSchema.index({ tenantId: 1, workspaceId: 1, createdAt: -1 });
 videoSchema.index({ tenantId: 1, uploadStatus: 1 });
 videoSchema.index({ tenantId: 1, createdAt: -1 });
 videoSchema.index({ title: 'text', description: 'text', tags: 'text' });

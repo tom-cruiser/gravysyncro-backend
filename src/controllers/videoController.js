@@ -4,7 +4,7 @@ const User = require('../models/User');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const { log } = require('../middleware/activityLogger');
-const { isEnterpriseAdmin } = require('../utils/workspaceAccess');
+const { isEnterpriseAdmin, canWriteWorkspace, canAccessWorkspace } = require('../utils/workspaceAccess');
 const { getTenantStorageSummary } = require('../utils/tenantStorage');
 const {
   createMultipartUpload,
@@ -77,6 +77,7 @@ exports.initiateUpload = catchAsync(async (req, res, next) => {
     description = '',
     category = 'General',
     tags = '',
+    workspaceId = null,
     folderId = null,
     folderPath = '',
   } = req.body;
@@ -87,6 +88,13 @@ exports.initiateUpload = catchAsync(async (req, res, next) => {
 
   const fileSizeNum = Number(fileSize);
   validateVideoFile(mimeType, fileName, fileSizeNum);
+
+  if (workspaceId) {
+    const canUploadToWorkspace = await canWriteWorkspace(req, workspaceId);
+    if (!canUploadToWorkspace) {
+      return next(new AppError('You do not have access to upload videos to this workspace.', 403));
+    }
+  }
 
   // Enforce concurrent-upload cap
   const activeCount = await countActiveUploads(req.user._id);
@@ -133,6 +141,7 @@ exports.initiateUpload = catchAsync(async (req, res, next) => {
     tenantId: req.user.tenantId,
     owner: req.user._id,
     uploadedBy: req.user._id,
+    workspaceId: workspaceId || null,
     title: title || fileName,
     description,
     fileName,
@@ -339,20 +348,14 @@ exports.getAllVideos = catchAsync(async (req, res, next) => {
   if (category) query.category = category;
   if (folderId === 'null') query.folderId = null;
   else if (folderId) query.folderId = folderId;
-
-  if (!isEnterpriseAdmin(req.user)) {
-    query.$or = [
-      ...(query.$or || []),
-      { uploadedBy: req.user._id },
-      { 'sharedWith.user': req.user._id },
-    ];
-    if (!search && !query.$or.some(c => c.uploadedBy)) {
-      query.$or = [
-        { uploadedBy: req.user._id },
-        { owner: req.user._id },
-        { 'sharedWith.user': req.user._id },
-      ];
+  if (req.query.workspaceId) {
+    if (!isEnterpriseAdmin(req.user)) {
+      const canViewWorkspace = await canAccessWorkspace(req, req.query.workspaceId);
+      if (!canViewWorkspace) {
+        return next(new AppError('You do not have access to this workspace.', 403));
+      }
     }
+    query.workspaceId = req.query.workspaceId;
   }
 
   const videos = await Video.find(query)
