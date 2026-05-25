@@ -240,10 +240,20 @@ exports.uploadDocument = catchAsync(async (req, res, next) => {
       fileSize: fileSizeBytes,
     });
 
+    existingDocument.$locals.currentUser = req.user;
+    existingDocument.$locals.assetActivity = {
+      action: 'UPLOAD',
+      previousState: existingDocument.lifecycleState || 'STARTED',
+      newState: existingDocument.lifecycleState || 'STARTED',
+      details: {
+        version: nextVersion,
+      },
+    };
+
     document = await existingDocument.save();
   } else {
     // Create document record
-    document = await Document.create({
+    document = new Document({
       tenantId: req.user.tenantId,
       owner: req.user._id,
       uploadedBy: req.user._id,
@@ -286,6 +296,18 @@ exports.uploadDocument = catchAsync(async (req, res, next) => {
         fileSize: fileSizeBytes,
       }],
     });
+
+    document.$locals.currentUser = req.user;
+    document.$locals.assetActivity = {
+      action: 'UPLOAD',
+      previousState: null,
+      newState: document.lifecycleState,
+      details: {
+        version: 1,
+      },
+    };
+
+    await document.save();
   }
 
   await User.findByIdAndUpdate(req.user._id, {
@@ -491,6 +513,8 @@ exports.updateDocument = catchAsync(async (req, res, next) => {
   if (folderId !== undefined) document.folderId = folderId;
   if (visibility) document.visibility = visibility;
 
+  document.$locals.currentUser = req.user;
+
   await document.save();
 
   // Log activity
@@ -535,6 +559,7 @@ exports.deleteDocument = catchAsync(async (req, res, next) => {
   document.isDeleted = true;
   document.deletedAt = Date.now();
   document.deletedBy = req.user._id;
+  document.$locals.currentUser = req.user;
   await document.save();
 
   // Log activity
@@ -605,7 +630,8 @@ exports.permanentDeleteDocument = catchAsync(async (req, res, next) => {
   }
 
   // Delete from database
-  await Document.deleteOne({ _id: document._id });
+  document.$locals.currentUser = req.user;
+  await document.deleteOne();
 
   await User.findByIdAndUpdate(document.owner, {
     $inc: { storageUsed: -Math.max(Number(document.fileSize || 0), 0) },
@@ -786,6 +812,7 @@ exports.shareDocument = catchAsync(async (req, res, next) => {
     });
   }
 
+  document.$locals.currentUser = req.user;
   await document.save();
 
   // Send email notification, but do not fail sharing if email service is unavailable.
@@ -837,6 +864,7 @@ exports.unshareDocument = catchAsync(async (req, res, next) => {
     share => share.user.toString() !== userId
   );
 
+  document.$locals.currentUser = req.user;
   await document.save();
 
   // Log activity
@@ -918,6 +946,8 @@ exports.restoreVersion = catchAsync(async (req, res, next) => {
   document.versions.push(newVersion);
   document.fileKey = version.fileKey;
   document.size = version.size;
+
+  document.$locals.currentUser = req.user;
 
   await document.save();
 

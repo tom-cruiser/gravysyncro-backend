@@ -21,6 +21,10 @@ const activityLogSchema = new mongoose.Schema({
     type: String,
     required: true,
     enum: [
+      'UPLOAD',
+      'STATE_CHANGE',
+      'DOWNLOAD',
+      'VIEW',
       'login',
       'logout',
       'register',
@@ -44,6 +48,52 @@ const activityLogSchema = new mongoose.Schema({
       'video_delete',
       'video_permanent_delete',
     ],
+  },
+
+  workspaceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Workspace',
+    index: true,
+    default: null,
+  },
+
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    index: true,
+    required() {
+      return ['UPLOAD', 'STATE_CHANGE', 'DOWNLOAD', 'VIEW'].includes(this.action);
+    },
+  },
+
+  assetId: {
+    type: mongoose.Schema.Types.ObjectId,
+    index: true,
+    required() {
+      return ['UPLOAD', 'STATE_CHANGE', 'DOWNLOAD', 'VIEW'].includes(this.action);
+    },
+  },
+
+  assetType: {
+    type: String,
+    enum: ['Document', 'Video'],
+    required() {
+      return ['UPLOAD', 'STATE_CHANGE', 'DOWNLOAD', 'VIEW'].includes(this.action);
+    },
+  },
+
+  previousState: {
+    type: String,
+  },
+
+  newState: {
+    type: String,
+  },
+
+  timestamp: {
+    type: Date,
+    default: Date.now,
+    index: true,
   },
   
   // Resource affected
@@ -80,6 +130,9 @@ const activityLogSchema = new mongoose.Schema({
 activityLogSchema.index({ tenantId: 1, createdAt: -1 });
 activityLogSchema.index({ tenantId: 1, user: 1, createdAt: -1 });
 activityLogSchema.index({ tenantId: 1, action: 1 });
+activityLogSchema.index({ tenantId: 1, timestamp: -1 });
+activityLogSchema.index({ tenantId: 1, workspaceId: 1, timestamp: -1 });
+activityLogSchema.index({ tenantId: 1, assetType: 1, assetId: 1, timestamp: -1 });
 
 // TTL index to auto-delete old logs (optional - 90 days)
 activityLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: 7776000 });

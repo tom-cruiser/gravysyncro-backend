@@ -1,5 +1,11 @@
 const ActivityLog = require('../models/ActivityLog');
+const mongoose = require('mongoose');
 const logger = require('../utils/logger');
+
+const normalizeResourceId = (resourceId) => {
+  if (!resourceId) return null;
+  return mongoose.Types.ObjectId.isValid(resourceId) ? resourceId : null;
+};
 
 /**
  * Log user activity
@@ -29,7 +35,7 @@ exports.logRequest = (action, resourceType = null) => {
           user: req.user?._id,
           action,
           resourceType,
-          resourceId: req.params.id || req.params.documentId || null,
+          resourceId: normalizeResourceId(req.params.id || req.params.documentId || null),
           details: {
             method: req.method,
             url: req.originalUrl,
@@ -67,7 +73,7 @@ exports.log = async (req, action, resourceType, resourceId, details = {}) => {
     user: req.user._id,
     action,
     resourceType,
-    resourceId,
+    resourceId: normalizeResourceId(resourceId),
     details,
     ipAddress: req.ip || req.connection.remoteAddress,
     userAgent: req.get('user-agent'),

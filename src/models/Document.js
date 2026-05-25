@@ -1,4 +1,12 @@
 const mongoose = require('mongoose');
+const AppError = require('../utils/appError');
+const {
+  LIFECYCLE_STATES,
+  applyLifecycleLock,
+  getLockedMutationPaths,
+  isPrivilegedAssetActor,
+} = require('../utils/assetLifecycle');
+const { logAssetActivity } = require('../services/assetActivityLogger');
 
 const documentSchema = new mongoose.Schema({
   // Multi-tenant identifier
@@ -148,11 +156,25 @@ const documentSchema = new mongoose.Schema({
     },
   }],
   
-  // Status
-  status: {
+  lifecycleState: {
     type: String,
-    enum: ['active', 'archived', 'deleted'],
-    default: 'active',
+    enum: LIFECYCLE_STATES,
+    default: 'STARTED',
+    index: true,
+  },
+  lifecycleLocked: {
+    type: Boolean,
+    default: false,
+    index: true,
+  },
+  lifecycleStateUpdatedAt: {
+    type: Date,
+    default: Date.now,
+    index: true,
+  },
+  lockedAt: {
+    type: Date,
+    default: null,
   },
   isDeleted: {
     type: Boolean,
@@ -246,7 +268,7 @@ const documentSchema = new mongoose.Schema({
 
 // Indexes
 documentSchema.index({ tenantId: 1, owner: 1 });
-documentSchema.index({ tenantId: 1, status: 1 });
+documentSchema.index({ tenantId: 1, lifecycleState: 1, createdAt: -1 });
 documentSchema.index({ tenantId: 1, isShared: 1 });
 documentSchema.index({ tenantId: 1, type: 1 });
 documentSchema.index({ tenantId: 1, createdAt: -1 });
@@ -260,6 +282,59 @@ documentSchema.index({
   title: 'text', 
   description: 'text', 
   tags: 'text' 
+});
+
+documentSchema.pre('save', function (next) {
+  const lockingTransition = this.isModified('lifecycleState') && ['FINISHED', 'ARCHIVED'].includes(this.lifecycleState);
+  applyLifecycleLock(this);
+
+  if (!this.isNew && this.lifecycleLocked) {
+    const protectedPaths = getLockedMutationPaths(this).filter((path) => {
+      if (lockingTransition && ['lifecycleState', 'lifecycleLocked', 'lockedAt', 'lifecycleStateUpdatedAt'].includes(path)) {
+        return false;
+      }
+      return true;
+    });
+
+    if (protectedPaths.length > 0 && !isPrivilegedAssetActor(this.$locals?.currentUser)) {
+      return next(new AppError('This document is locked and can only be updated or deleted by an admin or manager.', 403));
+    }
+  }
+
+  return next();
+});
+
+documentSchema.pre('deleteOne', { document: true, query: false }, function (next) {
+  if (this.lifecycleLocked && !isPrivilegedAssetActor(this.$locals?.currentUser)) {
+    return next(new AppError('This document is locked and can only be deleted by an admin or manager.', 403));
+  }
+
+  return next();
+});
+
+documentSchema.post('save', async function (doc, next) {
+  try {
+    const context = doc.$locals?.assetActivity;
+    const currentUser = doc.$locals?.currentUser;
+
+    if (context && currentUser?._id) {
+      await logAssetActivity({
+        tenantId: doc.tenantId,
+        workspaceId: doc.workspaceId || null,
+        userId: currentUser._id,
+        assetId: doc._id,
+        assetType: 'Document',
+        action: context.action,
+        previousState: context.previousState ?? null,
+        newState: context.newState ?? doc.lifecycleState,
+        details: context.details || {},
+      });
+    }
+
+    next();
+  } catch (error) {
+    next(error);
+  }
 });
 
 // Virtual for file URL (using signed URL)

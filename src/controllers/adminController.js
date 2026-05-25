@@ -632,9 +632,9 @@ const updateEnterpriseStorage = async ({ tenantId, req, res, next }) => {
     user: req.user._id,
     action: 'settings_change',
     resourceType: 'tenant',
-    resourceId: tenantId,
     details: {
       action: 'enterprise_storage_updated',
+      tenantId,
       oldPlanGb: tenantStorageBefore.storagePlanGb || 50,
       newPlanGb: normalizedPlan,
       updatedBy: req.user.email,

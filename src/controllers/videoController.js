@@ -166,7 +166,7 @@ exports.initiateUpload = catchAsync(async (req, res, next) => {
   const totalParts = Math.ceil(fileSizeNum / PART_SIZE);
 
   // Persist video record
-  const video = await Video.create({
+  const video = new Video({
     tenantId: req.user.tenantId,
     owner: req.user._id,
     uploadedBy: req.user._id,
@@ -187,6 +187,10 @@ exports.initiateUpload = catchAsync(async (req, res, next) => {
     category,
     tags: tags ? String(tags).split(',').map(t => t.trim()).filter(Boolean) : [],
   });
+
+  video.$locals.currentUser = req.user;
+
+  await video.save();
 
   res.status(201).json({
     status: 'success',
@@ -302,6 +306,15 @@ exports.completeUpload = catchAsync(async (req, res, next) => {
   video.uploadId = null;          // clear – no longer needed
   video.uploadedParts = sortedParts;
   if (checksum) video.checksum = checksum; // SHA-256 supplied by client
+  video.$locals.currentUser = req.user;
+  video.$locals.assetActivity = {
+    action: 'UPLOAD',
+    previousState: null,
+    newState: video.lifecycleState,
+    details: {
+      uploadStatus: 'complete',
+    },
+  };
   await video.save();
 
   // Update user storage
@@ -346,6 +359,7 @@ exports.abortUpload = catchAsync(async (req, res, next) => {
   video.isDeleted = true;
   video.deletedAt = Date.now();
   video.deletedBy = req.user._id;
+  video.$locals.currentUser = req.user;
   await video.save();
 
   res.status(200).json({ status: 'success', message: 'Upload aborted.' });
@@ -475,7 +489,7 @@ exports.deleteVideo = catchAsync(async (req, res, next) => {
   video.isDeleted = true;
   video.deletedAt = Date.now();
   video.deletedBy = req.user._id;
-  video.status = 'deleted';
+  video.$locals.currentUser = req.user;
   await video.save();
 
   await log(req, 'video_delete', 'video', video._id, { videoName: video.title });
@@ -507,7 +521,8 @@ exports.permanentDeleteVideo = catchAsync(async (req, res, next) => {
     if (err.code !== 'NoSuchKey') throw err;
   }
 
-  await Video.deleteOne({ _id: video._id });
+  video.$locals.currentUser = req.user;
+  await video.deleteOne();
 
   if (video.uploadStatus === 'complete') {
     await User.findByIdAndUpdate(video.owner, {

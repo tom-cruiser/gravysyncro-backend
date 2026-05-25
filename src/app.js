@@ -22,6 +22,7 @@ const adminRoutes = require("./routes/admin.routes");
 const messageRoutes = require("./routes/message.routes");
 const videoRoutes = require("./routes/video.routes");
 const workspaceRoutes = require("./routes/workspace.routes");
+const assetRoutes = require("./routes/asset.routes");
 
 // Create Express app
 const app = express();
@@ -43,8 +44,8 @@ app.use(helmet());
 // Body parser middleware
 // Note: multipart/form-data uploads are handled by multer middleware in routes,
 // so these limits only apply to regular JSON/form requests
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+app.use(express.json({ limit: "500mb" }));
+app.use(express.urlencoded({ extended: true, limit: "500mb" }));
 
 // Data sanitization against NoSQL query injection
 app.use(mongoSanitize());
@@ -93,6 +94,7 @@ app.use("/api/v1/admin", adminRoutes);
 app.use("/api/v1/messages", messageRoutes);
 app.use("/api/v1/videos", videoRoutes);
 app.use("/api/v1/workspaces", workspaceRoutes);
+app.use("/api/v1/assets", assetRoutes);
 
 // Handle undefined routes
 app.all("*", (req, res, next) => {
