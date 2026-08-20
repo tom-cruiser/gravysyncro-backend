@@ -34,6 +34,7 @@ const notificationSchema = new mongoose.Schema(
         "security",
         "support_response",
         "message_received",
+        "contact_form_received",
       ],
       required: true,
     },
@@ -62,6 +63,10 @@ const notificationSchema = new mongoose.Schema(
     relatedMessage: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Message",
+    },
+    relatedAudio: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Audio",
     },
 
     // Status

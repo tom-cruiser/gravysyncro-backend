@@ -47,6 +47,41 @@ exports.upload = upload;
 exports.uploadSingle = upload.single('file');
 exports.uploadMultiple = upload.array('files', parseInt(process.env.MAX_FILES_PER_UPLOAD) || 100);
 
+// Separate multer instance for audio clips (voice memos, meeting recordings,
+// uploaded audio files) — the main `upload` above only allows document/image
+// mime types, so audio needs its own filter rather than reusing it.
+const audioFileFilter = (req, file, cb) => {
+  const allowedAudioTypes = [
+    'audio/webm',
+    'audio/ogg',
+    'audio/mpeg',
+    'audio/mp3',
+    'audio/mp4',
+    'audio/x-m4a',
+    'audio/aac',
+    'audio/wav',
+    'audio/x-wav',
+    'audio/flac',
+  ];
+
+  if (allowedAudioTypes.includes(file.mimetype) || file.mimetype.startsWith('audio/')) {
+    cb(null, true);
+  } else {
+    cb(new AppError(`File type ${file.mimetype} is not a supported audio format`, 400), false);
+  }
+};
+
+const audioUpload = multer({
+  storage,
+  fileFilter: audioFileFilter,
+  limits: {
+    fileSize: parseInt(process.env.MAX_FILE_SIZE) || 157286400, // 150MB default
+    files: 1,
+  },
+});
+
+exports.uploadAudioSingle = audioUpload.single('file');
+
 // Error handler for multer errors
 exports.handleMulterError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {

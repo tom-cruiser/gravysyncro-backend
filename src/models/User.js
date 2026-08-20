@@ -94,6 +94,11 @@ const userSchema = new mongoose.Schema(
     emailVerificationToken: String,
     emailVerificationExpires: Date,
 
+    // A checkbox in the UI has little legal weight on its own — this is
+    // the actual, timestamped record that the user agreed to the Terms
+    // of Service at registration.
+    termsAcceptedAt: Date,
+
     // Password Reset
     passwordResetToken: String,
     passwordResetExpires: Date,

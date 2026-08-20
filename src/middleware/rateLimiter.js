@@ -56,3 +56,15 @@ exports.passwordResetLimiter = rateLimit({
     next(new AppError('Too many password reset attempts. Please try again later.', 429));
   },
 });
+
+// Public contact-form limiter — this endpoint has no auth at all, so it's
+// the most exposed one to spam/abuse of any public route.
+exports.contactFormLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 5, // 5 submissions per hour per IP
+  skip: () => isLimiterDisabled('ENABLE_CONTACT_RATE_LIMITING'),
+  message: 'Too many messages sent. Please try again later.',
+  handler: (req, res, next) => {
+    next(new AppError('Too many messages sent. Please try again later.', 429));
+  },
+});

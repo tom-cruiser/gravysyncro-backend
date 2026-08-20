@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 
 const Document = require('../models/Document');
 const Video = require('../models/Video');
+const Audio = require('../models/Audio');
 const Workspace = require('../models/Workspace');
 const ActivityLog = require('../models/ActivityLog');
 const AppError = require('../utils/appError');
@@ -14,6 +15,7 @@ const { LIFECYCLE_STATES } = require('../utils/assetLifecycle');
 const assetModels = {
   document: Document,
   video: Video,
+  audio: Audio,
 };
 
 const REPORT_PERIODS = {
@@ -115,9 +117,11 @@ const ASSET_TYPE_ALIASES = {
   files: 'document',
   video: 'video',
   videos: 'video',
+  audio: 'audio',
+  audios: 'audio',
 };
 
-// Which page/tab a report was generated from. Returning null means "both" —
+// Which page/tab a report was generated from. Returning null means "all" —
 // used by the admin-wide overview, which isn't scoped to a single asset type.
 const parseAssetTypeFilter = (value) => {
   if (!value || value === 'all') {
@@ -126,7 +130,7 @@ const parseAssetTypeFilter = (value) => {
 
   const normalized = ASSET_TYPE_ALIASES[String(value).toLowerCase()];
   if (!normalized) {
-    throw new AppError('Invalid asset type filter. Use "document", "video", or "all".', 400);
+    throw new AppError('Invalid asset type filter. Use "document", "video", "audio", or "all".', 400);
   }
 
   return normalized;
@@ -268,22 +272,27 @@ const buildWorkspaceAssetReport = async (req) => {
     lifecycleStates,
   };
 
-  const includeDocuments = assetType !== 'video';
-  const includeVideos = assetType !== 'document';
+  // null assetType means "all" (the admin-wide overview) — include every type.
+  const includeDocuments = !assetType || assetType === 'document';
+  const includeVideos = !assetType || assetType === 'video';
+  const includeAudio = !assetType || assetType === 'audio';
   const emptyAggregate = Promise.resolve([]);
+  const ASSET_TYPE_TO_ACTIVITY_LOG_LABEL = { video: 'Video', audio: 'Audio', document: 'Document' };
 
-  const [documentBottlenecks, videoBottlenecks, documentStorage, videoStorage, leaderboard] = await Promise.all([
+  const [documentBottlenecks, videoBottlenecks, audioBottlenecks, documentStorage, videoStorage, audioStorage, leaderboard] = await Promise.all([
     includeDocuments ? Document.aggregate(buildBottleneckPipeline(reportMatch)) : emptyAggregate,
     includeVideos ? Video.aggregate(buildBottleneckPipeline(reportMatch)) : emptyAggregate,
+    includeAudio ? Audio.aggregate(buildBottleneckPipeline(reportMatch)) : emptyAggregate,
     includeDocuments ? Document.aggregate(buildStorageProfilePipeline(reportMatch)) : emptyAggregate,
     includeVideos ? Video.aggregate(buildStorageProfilePipeline(reportMatch)) : emptyAggregate,
+    includeAudio ? Audio.aggregate(buildStorageProfilePipeline(reportMatch)) : emptyAggregate,
     ActivityLog.aggregate([
       {
         $match: {
           tenantId: req.user.tenantId,
           ...(workspaceId ? { workspaceId } : {}),
           action: 'STATE_CHANGE',
-          ...(assetType ? { assetType: assetType === 'video' ? 'Video' : 'Document' } : {}),
+          ...(assetType ? { assetType: ASSET_TYPE_TO_ACTIVITY_LOG_LABEL[assetType] } : {}),
           ...(Array.isArray(lifecycleStates) && lifecycleStates.length > 0 ? { newState: { $in: lifecycleStates } } : { newState: 'FINISHED' }),
           timestamp: {
             $gte: startDate,
@@ -339,7 +348,7 @@ const buildWorkspaceAssetReport = async (req) => {
     ]),
   ]);
 
-  const bottleneckRows = [...documentBottlenecks, ...videoBottlenecks];
+  const bottleneckRows = [...documentBottlenecks, ...videoBottlenecks, ...audioBottlenecks];
   const bottleneckTotals = ['STARTED', 'IN_PROGRESS', 'NEEDS_REVIEW', 'REJECTED'].reduce((acc, state) => {
     acc[state] = bottleneckRows
       .filter((row) => row._id === state)
@@ -347,8 +356,8 @@ const buildWorkspaceAssetReport = async (req) => {
     return acc;
   }, {});
 
-  const storageProfileByExtension = mergeByKey([...documentStorage, ...videoStorage], (row) => row._id?.extension || 'unknown');
-  const storageProfileByMimeType = mergeByKey([...documentStorage, ...videoStorage], (row) => row._id?.mimeType || 'application/octet-stream');
+  const storageProfileByExtension = mergeByKey([...documentStorage, ...videoStorage, ...audioStorage], (row) => row._id?.extension || 'unknown');
+  const storageProfileByMimeType = mergeByKey([...documentStorage, ...videoStorage, ...audioStorage], (row) => row._id?.mimeType || 'application/octet-stream');
 
   return {
     filters: {
@@ -374,7 +383,7 @@ exports.updateAssetLifecycleState = catchAsync(async (req, res, next) => {
   const { lifecycleState } = req.body;
 
   if (!assetModels[type]) {
-    return next(new AppError('Invalid asset type. Use document or video.', 400));
+    return next(new AppError('Invalid asset type. Use document, video, or audio.', 400));
   }
 
   if (!LIFECYCLE_STATES.includes(lifecycleState)) {
@@ -426,7 +435,8 @@ exports.getWorkspaceAssetReport = catchAsync(async (req, res, next) => {
 const formatAssetTypeLabel = (assetType) => {
   if (assetType === 'document') return 'Documents only';
   if (assetType === 'video') return 'Videos only';
-  return 'Documents & Videos';
+  if (assetType === 'audio') return 'Audio only';
+  return 'Documents, Videos & Audio';
 };
 
 const buildAssetReportWorkbook = (report) => {

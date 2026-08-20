@@ -3,16 +3,16 @@ const GB_IN_BYTES = 1024 * 1024 * 1024;
 // Single source of truth for the enterprise storage/subscription plans.
 // Add a plan here and it automatically becomes selectable everywhere
 // (admin controls, self-service billing page, validation).
+//
+// priceUsdPerMonth is the real advertised price, but no payment processor
+// is wired up yet (see billingController.js / utils/invoices.js) — these
+// numbers only drive the self-contained invoice ledger, not actual charges.
 const STORAGE_PLANS = [
   {
     id: 'starter',
     name: 'Starter',
     storageGb: 50,
-    // Placeholder monthly pricing — there is no real payment processor
-    // wired up yet (see billingController.js / utils/invoices.js), so
-    // these numbers only drive the self-contained invoice ledger.
-    // Update freely once real pricing is decided.
-    priceUsdPerMonth: 9,
+    priceUsdPerMonth: 15,
     features: [
       '50 GB shared enterprise storage pool',
       'Real-time collaboration',
@@ -25,7 +25,7 @@ const STORAGE_PLANS = [
     id: 'pro',
     name: 'Pro',
     storageGb: 100,
-    priceUsdPerMonth: 29,
+    priceUsdPerMonth: 25,
     popular: true,
     features: [
       '100 GB shared enterprise storage pool',
@@ -40,7 +40,7 @@ const STORAGE_PLANS = [
     id: 'business',
     name: 'Business',
     storageGb: 200,
-    priceUsdPerMonth: 79,
+    priceUsdPerMonth: 40,
     features: [
       '200 GB shared enterprise storage pool',
       'Real-time collaboration',
@@ -55,7 +55,7 @@ const STORAGE_PLANS = [
     id: 'growth',
     name: 'Growth',
     storageGb: 500,
-    priceUsdPerMonth: 199,
+    priceUsdPerMonth: 50,
     features: [
       '500 GB shared enterprise storage pool',
       'Real-time collaboration',
@@ -70,7 +70,7 @@ const STORAGE_PLANS = [
     id: 'scale',
     name: 'Scale',
     storageGb: 1000,
-    priceUsdPerMonth: 399,
+    priceUsdPerMonth: 65,
     features: [
       '1 TB shared enterprise storage pool',
       'Real-time collaboration',

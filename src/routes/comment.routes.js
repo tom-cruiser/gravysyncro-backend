@@ -20,6 +20,12 @@ router
   .get(commentController.getComments)
   .post(validate('addComment'), commentController.addComment);
 
+// Comment routes for an audio clip
+router
+  .route('/audio/:audioId')
+  .get(commentController.getComments)
+  .post(validate('addComment'), commentController.addComment);
+
 // Specific comment routes
 router
   .route('/:commentId')

@@ -1,10 +1,11 @@
 const Message = require('../models/Message');
 const User = require('../models/User');
-const Notification = require('../models/Notification');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const { isEnterpriseAdmin } = require('../utils/workspaceAccess');
 const { sendSlackMessage } = require('../services/slackService');
+const { createNotification } = require('./notificationController');
+const { emitToUser } = require('../config/socket');
 
 /**
  * Create a new support message (User)
@@ -23,9 +24,11 @@ exports.createMessage = catchAsync(async (req, res, next) => {
 
   await newMessage.populate('user', 'firstName lastName email');
 
-  // Create notification for all admins
+  // Notify every admin — createNotification both saves the Notification
+  // row and pushes it live over socket.io (notification:new) to anyone
+  // with that tab open, so the bell updates without a page reload.
   const admins = await User.find({ role: 'Admin' });
-  const adminNotifications = admins.map(admin => ({
+  await Promise.all(admins.map((admin) => createNotification({
     tenantId: admin.tenantId,
     user: admin._id,
     type: 'message_received',
@@ -33,11 +36,15 @@ exports.createMessage = catchAsync(async (req, res, next) => {
     message: `${req.user.firstName} ${req.user.lastName} sent a new support message: "${subject}"`,
     relatedMessage: newMessage._id,
     relatedUser: req.user._id,
-  }));
+  })));
 
-  if (adminNotifications.length > 0) {
-    await Notification.insertMany(adminNotifications);
-  }
+  // Separate from the notification bell — this is what lets an admin's
+  // open Messages/Contact Messages tab insert the new row live instead
+  // of waiting for a manual refresh.
+  admins.forEach((admin) => emitToUser(admin._id, 'message:new', {
+    message: newMessage,
+    source: newMessage.source || 'app',
+  }));
 
   // Fire-and-forget: never let a Slack hiccup slow down or fail this request.
   // sendSlackMessage already swallows its own errors and logs them.
@@ -54,6 +61,64 @@ exports.createMessage = catchAsync(async (req, res, next) => {
   res.status(201).json({
     status: 'success',
     data: { message: newMessage }
+  });
+});
+
+/**
+ * Create a message from the public landing-page contact form. No auth,
+ * no tenant — this is an anonymous visitor, so we snapshot their contact
+ * details onto the message itself rather than referencing a User.
+ */
+exports.createPublicMessage = catchAsync(async (req, res) => {
+  const { email, countryCode, phoneNumber, subject, message } = req.body;
+  const phone = [countryCode, phoneNumber].filter(Boolean).join(' ').trim();
+
+  const newMessage = await Message.create({
+    tenantId: 'public',
+    source: 'public_contact_form',
+    visitor: { email, phone },
+    subject,
+    message,
+    category: 'general',
+    priority: 'medium',
+  });
+
+  // Notify all admins in-app, same as the authenticated flow — but with
+  // its own notification type so the frontend can route a click straight
+  // to the "Contact Messages" admin tab instead of "Messages". Using
+  // createNotification (not a raw insertMany) means each one is also
+  // pushed live over socket.io so the bell updates immediately.
+  const admins = await User.find({ role: 'Admin' });
+  await Promise.all(admins.map((admin) => createNotification({
+    tenantId: admin.tenantId,
+    user: admin._id,
+    type: 'contact_form_received',
+    title: 'New Contact Form Submission',
+    message: `${email} sent a message via the contact form: "${subject}"`,
+    relatedMessage: newMessage._id,
+  })));
+
+  // Separate from the notification bell — this is what lets an admin's
+  // open Contact Messages tab insert the new row live.
+  admins.forEach((admin) => emitToUser(admin._id, 'message:new', {
+    message: newMessage,
+    source: newMessage.source,
+  }));
+
+  // Fire-and-forget: never let a Slack hiccup slow down or fail this request.
+  // sendSlackMessage already swallows its own errors and logs them.
+  sendSlackMessage(
+    [
+      ':envelope_with_arrow: *New contact form submission*',
+      `*From:* ${email}${phone ? ` · ${phone}` : ''}`,
+      `*Subject:* ${subject}`,
+      `*Message:* ${message}`,
+    ].join('\n')
+  );
+
+  res.status(201).json({
+    status: 'success',
+    message: 'Thanks for reaching out — we will get back to you soon.',
   });
 });
 
@@ -107,6 +172,7 @@ exports.getAllMessages = catchAsync(async (req, res, next) => {
     category,
     isRead,
     search,
+    source,
     page = 1,
     limit = 20,
     sortBy = '-createdAt'
@@ -119,6 +185,16 @@ exports.getAllMessages = catchAsync(async (req, res, next) => {
   if (category) query.category = category;
   if (isRead !== undefined) query.isRead = isRead === 'true';
 
+  // Messages created before the `source` field existed have no such field
+  // stored at all (not even "app") — so "app" must match "anything that
+  // isn't a public contact-form message" rather than an exact equality,
+  // or every pre-existing support message would vanish from that tab.
+  if (source === 'public_contact_form') {
+    query.source = 'public_contact_form';
+  } else if (source === 'app') {
+    query.source = { $ne: 'public_contact_form' };
+  }
+
   if (search) {
     query.$or = [
       { subject: { $regex: search, $options: 'i' } },
@@ -128,6 +204,13 @@ exports.getAllMessages = catchAsync(async (req, res, next) => {
 
   const skip = (page - 1) * limit;
 
+  // Scoped to the same filters as the list itself (minus isRead, since we
+  // want the unread count regardless of the isRead filter currently
+  // applied) — otherwise this badge would show the same global number on
+  // both the Support and Contact Messages tabs.
+  const { isRead: _omitIsRead, ...unreadQueryBase } = query;
+  const unreadQuery = { ...unreadQueryBase, isRead: false };
+
   const [messages, total, unreadCount] = await Promise.all([
     Message.find(query)
       .populate('user', 'firstName lastName email tenantId')
@@ -136,7 +219,7 @@ exports.getAllMessages = catchAsync(async (req, res, next) => {
       .skip(skip)
       .limit(parseInt(limit)),
     Message.countDocuments(query),
-    Message.countDocuments({ isRead: false })
+    Message.countDocuments(unreadQuery)
   ]);
 
   res.status(200).json({
@@ -167,8 +250,10 @@ exports.getMessageById = catchAsync(async (req, res, next) => {
     return next(new AppError('Message not found', 404));
   }
 
-  // Check if user is admin or message owner
-  if (!isEnterpriseAdmin(req.user) && message.user._id.toString() !== req.user._id.toString()) {
+  // Check if user is admin or message owner. Public contact-form
+  // messages have no `user` at all, so only an admin may view those.
+  const isOwner = message.user && message.user._id.toString() === req.user._id.toString();
+  if (!isEnterpriseAdmin(req.user) && !isOwner) {
     return next(new AppError('You do not have permission to view this message', 403));
   }
 
@@ -230,16 +315,23 @@ exports.respondToMessage = catchAsync(async (req, res, next) => {
 
   await message.save();
 
-  // Create notification for the user who sent the message
-  await Notification.create({
-    tenantId: message.user.tenantId,
-    user: message.user._id,
-    type: 'support_response',
-    title: 'Support Response Received',
-    message: `Your support request "${message.subject}" has been responded to by our team.`,
-    relatedMessage: message._id,
-    relatedUser: req.user._id,
-  });
+  // Create an in-app notification for the user who sent the message —
+  // createNotification also pushes it live over socket.io, so it shows
+  // up in their bell immediately rather than on their next page load.
+  // Public contact-form messages have no `user` account to notify this
+  // way — the response is still saved on the message itself above and
+  // visible to admins, it just isn't pushed to anyone in-app.
+  if (message.user) {
+    await createNotification({
+      tenantId: message.user.tenantId,
+      user: message.user._id,
+      type: 'support_response',
+      title: 'Support Response Received',
+      message: `Your support request "${message.subject}" has been responded to by our team.`,
+      relatedMessage: message._id,
+      relatedUser: req.user._id,
+    });
+  }
 
   await message.populate('respondedBy', 'firstName lastName email');
 

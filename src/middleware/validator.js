@@ -13,6 +13,10 @@ const schemas = {
       .message('Password must contain at least one lowercase letter, one uppercase letter, and one number'),
     role: Joi.string().valid('Student', 'Notary', 'Teacher', 'Lawyer', 'Professional', 'Admin', 'Manager', 'Member', 'Guest', 'Client').default('Professional'),
     tenantId: Joi.string().optional(),
+    // Mirrors the frontend's disabled-submit-button check server-side —
+    // the UI gate alone doesn't stop a direct API call from skipping it.
+    termsAccepted: Joi.boolean().valid(true).required()
+      .messages({ 'any.only': 'You must agree to the Terms of Service to register.' }),
   }),
 
   // User login
@@ -25,6 +29,19 @@ const schemas = {
   // Password reset request
   forgotPassword: Joi.object({
     email: Joi.string().email().required(),
+  }),
+
+  // Public landing-page contact form (no auth — untrusted input)
+  contactForm: Joi.object({
+    email: Joi.string().trim().email().required(),
+    countryCode: Joi.string().trim().pattern(/^\+\d{1,4}$/)
+      .message('Country code must look like "+1", "+257", etc.')
+      .required(),
+    phoneNumber: Joi.string().trim().pattern(/^[0-9\s-]{4,15}$/)
+      .message('Enter a valid phone number')
+      .required(),
+    subject: Joi.string().trim().min(2).max(200).required(),
+    message: Joi.string().trim().min(2).max(5000).required(),
   }),
 
   // Reset password
@@ -100,6 +117,21 @@ const schemas = {
   }),
 
   // Initiate video upload (multipart)
+  uploadAudio: Joi.object({
+    title: Joi.string().trim().min(1).max(255).optional().allow(''),
+    description: Joi.string().trim().max(1000).optional().allow(''),
+    category: Joi.string().trim().optional().allow(''),
+    tags: Joi.alternatives().try(
+      Joi.array().items(Joi.string().trim()),
+      Joi.string().trim().allow('')
+    ).optional(),
+    folderId: Joi.string().optional().allow('', null),
+    folderPath: Joi.string().trim().optional().allow(''),
+    workspaceId: Joi.string().optional().allow('', null),
+    duration: Joi.alternatives().try(Joi.number(), Joi.string()).optional(),
+    recordedLive: Joi.alternatives().try(Joi.boolean(), Joi.string()).optional(),
+  }),
+
   initiateVideo: Joi.object({
     fileName: Joi.string().trim().min(1).max(500).required(),
     mimeType: Joi.string().trim().required(),

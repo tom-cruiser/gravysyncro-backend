@@ -1,10 +1,15 @@
 const express = require('express');
 const messageController = require('../controllers/messageController');
 const { protect, restrictTo } = require('../middleware/auth');
+const { validate } = require('../middleware/validator');
+const { contactFormLimiter } = require('../middleware/rateLimiter');
 
 const router = express.Router();
 
-// All routes require authentication
+// Public route — no auth. Must stay above router.use(protect) below.
+router.post('/public', contactFormLimiter, validate('contactForm'), messageController.createPublicMessage);
+
+// All routes below this line require authentication
 router.use(protect);
 
 // User routes

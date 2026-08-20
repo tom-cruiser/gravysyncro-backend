@@ -72,6 +72,9 @@ exports.register = catchAsync(async (req, res, next) => {
     password,
     role,
     isVerified: process.env.NODE_ENV === 'development', // Auto-verify in development
+    // req.body.termsAccepted is validated as required+true by the `register`
+    // Joi schema before this handler ever runs, so this is always "now".
+    termsAcceptedAt: new Date(),
   });
 
   // Send response immediately

@@ -47,6 +47,11 @@ const activityLogSchema = new mongoose.Schema({
       'video_download',
       'video_delete',
       'video_permanent_delete',
+      'audio_upload',
+      'audio_view',
+      'audio_download',
+      'audio_delete',
+      'audio_permanent_delete',
     ],
   },
 
@@ -76,7 +81,7 @@ const activityLogSchema = new mongoose.Schema({
 
   assetType: {
     type: String,
-    enum: ['Document', 'Video'],
+    enum: ['Document', 'Video', 'Audio'],
     required() {
       return ['UPLOAD', 'STATE_CHANGE', 'DOWNLOAD', 'VIEW'].includes(this.action);
     },
@@ -99,7 +104,7 @@ const activityLogSchema = new mongoose.Schema({
   // Resource affected
   resourceType: {
     type: String,
-    enum: ['user', 'document', 'comment', 'tenant', 'system', 'video'],
+    enum: ['user', 'document', 'comment', 'tenant', 'system', 'video', 'audio'],
   },
   resourceId: {
     type: mongoose.Schema.Types.ObjectId,

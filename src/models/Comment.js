@@ -22,7 +22,15 @@ const commentSchema = new mongoose.Schema({
     index: true,
     default: null,
   },
-  
+
+  // Audio reference (for audio clip conversation threads)
+  audio: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Audio',
+    index: true,
+    default: null,
+  },
+
   // Author
   author: {
     type: mongoose.Schema.Types.ObjectId,
@@ -76,15 +84,15 @@ const commentSchema = new mongoose.Schema({
 // Indexes
 commentSchema.index({ tenantId: 1, document: 1, createdAt: -1 });
 commentSchema.index({ tenantId: 1, video: 1, createdAt: -1 });
+commentSchema.index({ tenantId: 1, audio: 1, createdAt: -1 });
 commentSchema.index({ author: 1 });
 
 // Ensure comment always belongs to exactly one resource type.
 commentSchema.pre('validate', function(next) {
-  const hasDocument = !!this.document;
-  const hasVideo = !!this.video;
+  const targetCount = [this.document, this.video, this.audio].filter(Boolean).length;
 
-  if ((hasDocument && hasVideo) || (!hasDocument && !hasVideo)) {
-    return next(new Error('Comment must reference either a document or a video.'));
+  if (targetCount !== 1) {
+    return next(new Error('Comment must reference exactly one of: document, video, or audio.'));
   }
 
   next();

@@ -1,6 +1,7 @@
 const Comment = require('../models/Comment');
 const Document = require('../models/Document');
 const Video = require('../models/Video');
+const Audio = require('../models/Audio');
 const User = require('../models/User');
 const Workspace = require('../models/Workspace');
 const AppError = require('../utils/appError');
@@ -36,33 +37,41 @@ const buildThreadTree = (comments = []) => {
   return roots;
 };
 
+// Resolves which single resource a comment request targets, from whichever
+// of :documentId / :videoId / :audioId is present on the route.
+const resolveCommentTarget = (params) => {
+  const { documentId, videoId, audioId } = params;
+  const provided = [documentId, videoId, audioId].filter(Boolean);
+
+  if (provided.length === 0) {
+    throw new AppError('A target document, video, or audio clip is required', 400);
+  }
+  if (provided.length > 1) {
+    throw new AppError('Comment target must be exactly one of: document, video, or audio', 400);
+  }
+
+  if (videoId) return { kind: 'video', targetId: videoId };
+  if (audioId) return { kind: 'audio', targetId: audioId };
+  return { kind: 'document', targetId: documentId };
+};
+
 /**
- * Add comment to document
+ * Add comment to document, video, or audio clip
  */
 exports.addComment = catchAsync(async (req, res, next) => {
   const content = req.body.content || req.body.text;
   const parentId = req.body.parentId || req.body.parentComment;
-  const { documentId, videoId } = req.params;
-
-  if (!documentId && !videoId) {
-    return next(new AppError('A target document or video is required', 400));
-  }
-
-  if (documentId && videoId) {
-    return next(new AppError('Comment target must be either document or video', 400));
-  }
-
-  const isVideoTarget = !!videoId;
-  const targetId = videoId || documentId;
-  let targetName = 'resource';
+  const { kind, targetId } = resolveCommentTarget(req.params);
 
   let document = null;
   let video = null;
+  let audio = null;
   let workspace = null;
+  let targetName = 'resource';
 
-  if (isVideoTarget) {
+  if (kind === 'video') {
     video = await Video.findOne({
-      _id: videoId,
+      _id: targetId,
       tenantId: req.user.tenantId,
       isDeleted: false,
       uploadStatus: 'complete',
@@ -74,12 +83,43 @@ exports.addComment = catchAsync(async (req, res, next) => {
 
     // Video conversations are tenant-collaborative: any authenticated user
     // in the same tenant may participate in the thread.
-
     targetName = video.title || video.fileName || 'video';
+  } else if (kind === 'audio') {
+    audio = await Audio.findOne({
+      _id: targetId,
+      tenantId: req.user.tenantId,
+      isDeleted: false,
+    }).populate('uploadedBy');
+
+    if (!audio) {
+      return next(new AppError('Audio clip not found', 404));
+    }
+
+    const canView = audio.hasAccess(req.user._id, 'view') || await canViewWorkspaceDocument(req, audio);
+    if (!canView) {
+      return next(new AppError('You do not have permission to comment on this audio clip', 403));
+    }
+
+    workspace = audio.workspaceId
+      ? await Workspace.findOne({ _id: audio.workspaceId, tenantId: req.user.tenantId })
+      : null;
+
+    if (workspace) {
+      const canAccess = await canAccessWorkspace(req, workspace._id);
+      if (!canAccess) {
+        return next(new AppError('You do not have permission to comment on this workspace', 403));
+      }
+
+      if (workspace.status === 'archived' && !workspace.reworkEnabled) {
+        return next(new AppError('This workspace is archived and read-only', 403));
+      }
+    }
+
+    targetName = audio.title || audio.fileName || 'audio clip';
   } else {
     // Check if document exists and user has access
     document = await Document.findOne({
-      _id: documentId,
+      _id: targetId,
       tenantId: req.user.tenantId,
       isDeleted: false,
     }).populate('uploadedBy');
@@ -116,7 +156,7 @@ exports.addComment = catchAsync(async (req, res, next) => {
   if (parentId) {
     const parentComment = await Comment.findOne({
       _id: parentId,
-      ...(isVideoTarget ? { video: videoId } : { document: documentId }),
+      [kind]: targetId,
       tenantId: req.user.tenantId,
     });
 
@@ -128,8 +168,9 @@ exports.addComment = catchAsync(async (req, res, next) => {
   // Create comment
   const comment = await Comment.create({
     tenantId: req.user.tenantId,
-    document: isVideoTarget ? null : documentId,
-    video: isVideoTarget ? videoId : null,
+    document: kind === 'document' ? targetId : null,
+    video: kind === 'video' ? targetId : null,
+    audio: kind === 'audio' ? targetId : null,
     author: req.user._id,
     text: content,
     parentComment: parentId || null,
@@ -139,7 +180,7 @@ exports.addComment = catchAsync(async (req, res, next) => {
   await comment.populate('author', 'firstName lastName email');
 
   const recipientIds = new Set();
-  if (isVideoTarget) {
+  if (kind === 'video') {
     const videoOwnerId = (video.owner || video.uploadedBy)?.toString();
     if (videoOwnerId && videoOwnerId !== req.user._id.toString()) {
       recipientIds.add(videoOwnerId);
@@ -151,11 +192,20 @@ exports.addComment = catchAsync(async (req, res, next) => {
     // Include everyone already participating in this video thread.
     const participantIds = await Comment.distinct('author', {
       tenantId: req.user.tenantId,
-      video: videoId,
+      video: targetId,
     });
     participantIds.forEach((participantId) => {
       if (participantId) recipientIds.add(participantId.toString());
     });
+  } else if (kind === 'audio') {
+    if (audio.uploadedBy && audio.uploadedBy._id.toString() !== req.user._id.toString()) {
+      recipientIds.add(audio.uploadedBy._id.toString());
+    }
+    if (workspace) {
+      (workspace.members || []).forEach((member) => recipientIds.add(member.user.toString()));
+      (workspace.guests || []).forEach((guest) => recipientIds.add(guest.user.toString()));
+      if (workspace.manager) recipientIds.add(workspace.manager.toString());
+    }
   } else {
     if (document.uploadedBy && document.uploadedBy._id.toString() !== req.user._id.toString()) {
       recipientIds.add(document.uploadedBy._id.toString());
@@ -181,6 +231,8 @@ exports.addComment = catchAsync(async (req, res, next) => {
 
   mentionUsers.forEach((user) => recipientIds.add(user._id.toString()));
 
+  const actionUrl = kind === 'document' ? `/documents?view=${document._id}` : '/documents';
+
   await Promise.all([...recipientIds].map((userId) => createNotification({
     tenantId: req.user.tenantId,
     user: userId,
@@ -190,22 +242,23 @@ exports.addComment = catchAsync(async (req, res, next) => {
       ? `${req.user.firstName} mentioned you in ${targetName}`
       : `${req.user.firstName} commented on ${targetName}`,
     relatedDocument: document?._id,
+    relatedAudio: audio?._id,
     relatedWorkspace: workspace?._id,
-    actionUrl: isVideoTarget ? '/documents' : `/documents?view=${document._id}`,
+    actionUrl,
   })));
 
   // Send notification email to owner when useful; workspace notifications are handled in-app.
-  if (!isVideoTarget && document.uploadedBy && document.uploadedBy._id.toString() !== req.user._id.toString()) {
+  if (kind === 'document' && document.uploadedBy && document.uploadedBy._id.toString() !== req.user._id.toString()) {
     await sendCommentNotificationEmail(document.uploadedBy, document, comment, req.user);
   }
 
   // Log activity
-  await log(req, 'comment_add', 'comment', comment._id, { documentId, videoId });
+  await log(req, 'comment_add', 'comment', comment._id, { documentId: document?._id, videoId: video?._id, audioId: audio?._id });
 
   emitTenantEvent(req.user.tenantId, 'comment:changed', {
     action: 'created',
     commentId: comment._id,
-    resourceType: isVideoTarget ? 'video' : 'document',
+    resourceType: kind,
     resourceId: targetId,
   });
 
@@ -218,25 +271,15 @@ exports.addComment = catchAsync(async (req, res, next) => {
 });
 
 /**
- * Get comments for document
+ * Get comments for a document, video, or audio clip
  */
 exports.getComments = catchAsync(async (req, res, next) => {
-  const { documentId, videoId } = req.params;
   const { page = 1, limit = 20 } = req.query;
+  const { kind, targetId } = resolveCommentTarget(req.params);
 
-  if (!documentId && !videoId) {
-    return next(new AppError('A target document or video is required', 400));
-  }
-
-  if (documentId && videoId) {
-    return next(new AppError('Comment target must be either document or video', 400));
-  }
-
-  const isVideoTarget = !!videoId;
-
-  if (isVideoTarget) {
+  if (kind === 'video') {
     const video = await Video.findOne({
-      _id: videoId,
+      _id: targetId,
       tenantId: req.user.tenantId,
       isDeleted: false,
       uploadStatus: 'complete',
@@ -248,10 +291,25 @@ exports.getComments = catchAsync(async (req, res, next) => {
 
     // Video conversations are tenant-collaborative: any authenticated user
     // in the same tenant may view and participate in the thread.
+  } else if (kind === 'audio') {
+    const audio = await Audio.findOne({
+      _id: targetId,
+      tenantId: req.user.tenantId,
+      isDeleted: false,
+    });
+
+    if (!audio) {
+      return next(new AppError('Audio clip not found', 404));
+    }
+
+    const canView = audio.hasAccess(req.user._id, 'view') || await canViewWorkspaceDocument(req, audio);
+    if (!canView) {
+      return next(new AppError('You do not have permission to view comments on this audio clip', 403));
+    }
   } else {
     // Check if document exists and user has access
     const document = await Document.findOne({
-      _id: documentId,
+      _id: targetId,
       tenantId: req.user.tenantId,
       isDeleted: false,
     });
@@ -268,7 +326,7 @@ exports.getComments = catchAsync(async (req, res, next) => {
   }
 
   const comments = await Comment.find({
-    ...(isVideoTarget ? { video: videoId } : { document: documentId }),
+    [kind]: targetId,
     tenantId: req.user.tenantId,
   })
     .populate('author', 'firstName lastName email')
@@ -278,7 +336,7 @@ exports.getComments = catchAsync(async (req, res, next) => {
 
   // Get total count
   const total = await Comment.countDocuments({
-    ...(isVideoTarget ? { video: videoId } : { document: documentId }),
+    [kind]: targetId,
     tenantId: req.user.tenantId,
   });
 
@@ -327,11 +385,12 @@ exports.updateComment = catchAsync(async (req, res, next) => {
   // Log activity
   await log(req, 'comment_update', 'comment', comment._id);
 
+  const resourceType = comment.video ? 'video' : (comment.audio ? 'audio' : 'document');
   emitTenantEvent(req.user.tenantId, 'comment:changed', {
     action: 'updated',
     commentId: comment._id,
-    resourceType: comment.video ? 'video' : 'document',
-    resourceId: comment.video || comment.document,
+    resourceType,
+    resourceId: comment.video || comment.audio || comment.document,
   });
 
   res.status(200).json({
@@ -373,11 +432,12 @@ exports.deleteComment = catchAsync(async (req, res, next) => {
   // Log activity
   await log(req, 'comment_delete', 'comment', comment._id);
 
+  const resourceType = comment.video ? 'video' : (comment.audio ? 'audio' : 'document');
   emitTenantEvent(req.user.tenantId, 'comment:changed', {
     action: 'deleted',
     commentId: comment._id,
-    resourceType: comment.video ? 'video' : 'document',
-    resourceId: comment.video || comment.document,
+    resourceType,
+    resourceId: comment.video || comment.audio || comment.document,
   });
 
   res.status(200).json({

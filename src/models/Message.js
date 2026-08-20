@@ -8,14 +8,34 @@ const messageSchema = new mongoose.Schema({
     index: true,
   },
   
-  // User who sent the message
+  // Where this message came from. Public contact-form submissions have
+  // no logged-in user/tenant, so this flag is what lets the rest of the
+  // schema (and the admin UI) treat them differently.
+  source: {
+    type: String,
+    enum: ['app', 'public_contact_form'],
+    default: 'app',
+    index: true,
+  },
+
+  // User who sent the message — only present for in-app (authenticated)
+  // messages. A public contact-form visitor has no account, so this is
+  // conditionally required rather than always required.
   user: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true,
+    required: function () { return this.source !== 'public_contact_form'; },
     index: true,
   },
-  
+
+  // Snapshot of the visitor's own contact details, only populated for
+  // public_contact_form messages (there's no User document to look this
+  // up from later).
+  visitor: {
+    email: { type: String, trim: true, lowercase: true },
+    phone: { type: String, trim: true },
+  },
+
   // Message details
   subject: {
     type: String,
