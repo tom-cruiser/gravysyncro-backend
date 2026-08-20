@@ -852,3 +852,85 @@ exports.getSystemHealth = catchAsync(async (req, res, next) => {
     }
   });
 });
+
+/**
+ * Admin override for a user's trial/subscription access (admin only).
+ *
+ * PATCH /admin/users/:userId/subscription-access
+ * Body: { accessLevel?: 'trial'|'active'|'locked'|'admin-approved', extendDays?: number }
+ *
+ * - accessLevel: 'locked'            -> immediately revokes access.
+ * - extendDays provided (> 0)        -> pushes trialExpiresAt out that many
+ *   days from now and re-activates access (accessLevel defaults to 'active'
+ *   unless overridden).
+ * - neither of the above             -> grants indefinite access: clears
+ *   trialExpiresAt and sets accessLevel to 'admin-approved' unless overridden.
+ */
+const ACCESS_LEVELS = ['trial', 'active', 'locked', 'admin-approved'];
+
+exports.updateUserSubscriptionAccess = catchAsync(async (req, res, next) => {
+  const { userId } = req.params;
+  const { accessLevel, extendDays } = req.body;
+
+  if (accessLevel && !ACCESS_LEVELS.includes(accessLevel)) {
+    return next(new AppError(`Invalid access level. Use one of: ${ACCESS_LEVELS.join(', ')}`, 400));
+  }
+
+  const user = await User.findById(userId);
+  if (!user) {
+    return next(new AppError('User not found', 404));
+  }
+
+  if (accessLevel === 'locked') {
+    user.isSubscriptionActive = false;
+    user.accessLevel = 'locked';
+  } else if (extendDays !== undefined) {
+    const days = Number(extendDays);
+    if (!Number.isFinite(days) || days <= 0) {
+      return next(new AppError('extendDays must be a positive number.', 400));
+    }
+    user.trialExpiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+    user.isSubscriptionActive = true;
+    user.accessLevel = accessLevel || 'active';
+  } else {
+    // No extendDays and not locking -> indefinite admin-granted access.
+    user.trialExpiresAt = null;
+    user.isSubscriptionActive = true;
+    user.accessLevel = accessLevel || 'admin-approved';
+  }
+
+  await user.save({ validateBeforeSave: false });
+
+  await ActivityLog.create({
+    tenantId: user.tenantId,
+    user: req.user._id,
+    action: 'settings_change',
+    resourceType: 'user',
+    resourceId: user._id,
+    details: {
+      action: 'subscription_access_updated',
+      targetUserEmail: user.email,
+      accessLevel: user.accessLevel,
+      isSubscriptionActive: user.isSubscriptionActive,
+      trialExpiresAt: user.trialExpiresAt,
+      updatedBy: req.user.email,
+    },
+    ipAddress: req.ip,
+    userAgent: req.get('user-agent'),
+    status: 'success',
+  });
+
+  res.status(200).json({
+    status: 'success',
+    message: `Access updated for ${user.email}`,
+    data: {
+      user: {
+        _id: user._id,
+        email: user.email,
+        accessLevel: user.accessLevel,
+        isSubscriptionActive: user.isSubscriptionActive,
+        trialExpiresAt: user.trialExpiresAt,
+      },
+    },
+  });
+});

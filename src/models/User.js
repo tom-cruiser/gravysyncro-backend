@@ -156,6 +156,27 @@ const userSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+
+    // Subscription trial / access-lock
+    // Note: these defaults only apply to documents created from now on —
+    // Mongoose defaults are not backfilled onto rows that already exist in
+    // the database, so pre-existing users simply have these fields
+    // `undefined` until an admin or the cron job explicitly sets them.
+    // That's intentional: shipping this feature must never silently lock
+    // out everyone who signed up before it existed.
+    trialExpiresAt: {
+      type: Date,
+      default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from registration
+    },
+    isSubscriptionActive: {
+      type: Boolean,
+      default: true, // active for the duration of the trial window above
+    },
+    accessLevel: {
+      type: String,
+      enum: ['trial', 'active', 'locked', 'admin-approved'],
+      default: 'trial',
+    },
   },
   {
     timestamps: true,
@@ -167,6 +188,7 @@ const userSchema = new mongoose.Schema(
 // Indexes
 userSchema.index({ tenantId: 1, email: 1 }, { unique: true });
 userSchema.index({ tenantId: 1, role: 1 });
+userSchema.index({ accessLevel: 1, isSubscriptionActive: 1, trialExpiresAt: 1 });
 
 // Virtual for full name
 userSchema.virtual("fullName").get(function () {

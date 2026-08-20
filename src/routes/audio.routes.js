@@ -1,6 +1,7 @@
 const express = require('express');
 const audioController = require('../controllers/audioController');
 const { protect, restrictTo } = require('../middleware/auth');
+const { requireActiveSubscription } = require('../middleware/subscriptionAccess');
 const { uploadAudioSingle } = require('../middleware/upload');
 const { uploadLimiter } = require('../middleware/rateLimiter');
 const { validate } = require('../middleware/validator');
@@ -9,6 +10,8 @@ const router = express.Router();
 
 // All routes require authentication
 router.use(protect);
+// Audio storage is a core paid feature — locked out once the trial expires.
+router.use(requireActiveSubscription);
 
 router
   .route('/')

@@ -1,11 +1,14 @@
 const express = require('express');
 const workspaceController = require('../controllers/workspaceController');
 const { protect } = require('../middleware/auth');
+const { requireActiveSubscription } = require('../middleware/subscriptionAccess');
 const { validate } = require('../middleware/validator');
 
 const router = express.Router();
 
 router.use(protect);
+// Real-time collaboration is a core paid feature — locked out once the trial expires.
+router.use(requireActiveSubscription);
 
 router.get('/', workspaceController.getWorkspaces);
 router.get('/terminology', workspaceController.getTerminology);

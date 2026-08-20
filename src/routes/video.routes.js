@@ -1,6 +1,7 @@
 const express = require('express');
 const videoController = require('../controllers/videoController');
 const { protect, restrictTo } = require('../middleware/auth');
+const { requireActiveSubscription } = require('../middleware/subscriptionAccess');
 const { uploadLimiter } = require('../middleware/rateLimiter');
 const { validate } = require('../middleware/validator');
 
@@ -8,6 +9,8 @@ const router = express.Router();
 
 // All routes require authentication
 router.use(protect);
+// Video storage is a core paid feature — locked out once the trial expires.
+router.use(requireActiveSubscription);
 
 // ── Initiate a new resumable multipart upload ──────────────────────────────
 router.post('/initiate', uploadLimiter, validate('initiateVideo'), videoController.initiateUpload);

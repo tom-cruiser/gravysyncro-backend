@@ -1,6 +1,7 @@
 const express = require('express');
 const documentController = require('../controllers/documentController');
 const { protect, restrictTo } = require('../middleware/auth');
+const { requireActiveSubscription } = require('../middleware/subscriptionAccess');
 const { upload } = require('../middleware/upload');
 const { validate } = require('../middleware/validator');
 const { uploadLimiter } = require('../middleware/rateLimiter');
@@ -9,6 +10,8 @@ const router = express.Router();
 
 // All routes require authentication
 router.use(protect);
+// Document archiving is a core paid feature — locked out once the trial expires.
+router.use(requireActiveSubscription);
 
 // Document routes
 router
