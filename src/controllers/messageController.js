@@ -4,6 +4,7 @@ const Notification = require('../models/Notification');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const { isEnterpriseAdmin } = require('../utils/workspaceAccess');
+const { sendSlackMessage } = require('../services/slackService');
 
 /**
  * Create a new support message (User)
@@ -37,6 +38,18 @@ exports.createMessage = catchAsync(async (req, res, next) => {
   if (adminNotifications.length > 0) {
     await Notification.insertMany(adminNotifications);
   }
+
+  // Fire-and-forget: never let a Slack hiccup slow down or fail this request.
+  // sendSlackMessage already swallows its own errors and logs them.
+  sendSlackMessage(
+    [
+      ':envelope: *New support message*',
+      `*From:* ${req.user.firstName} ${req.user.lastName} (${req.user.email})`,
+      `*Subject:* ${subject}`,
+      `*Priority:* ${newMessage.priority} · *Category:* ${newMessage.category}`,
+      `*Message:* ${message}`,
+    ].join('\n')
+  );
 
   res.status(201).json({
     status: 'success',
