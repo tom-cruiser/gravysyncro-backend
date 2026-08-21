@@ -33,8 +33,15 @@ const app = express();
 app.set("trust proxy", 1);
 
 // CORS configuration
+// A literal "*" origin combined with credentials:true is invalid per the
+// CORS spec — browsers silently reject the response for any request that
+// carries credentials (several frontend pages set withCredentials: true)
+// instead of surfacing a clear error, which looks like a hung/dead request.
+// `true` here makes the `cors` package reflect the actual request Origin
+// instead, which is spec-compliant with credentials:true, for whenever
+// ALLOWED_ORIGINS isn't set.
 const corsOptions = {
-  origin: process.env.ALLOWED_ORIGINS?.split(",") || "*",
+  origin: process.env.ALLOWED_ORIGINS?.split(",") || true,
   credentials: true,
   optionsSuccessStatus: 200,
 };

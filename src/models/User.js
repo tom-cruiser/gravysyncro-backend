@@ -1,5 +1,5 @@
 const mongoose = require("mongoose");
-const bcrypt = require("bcryptjs");
+const bcrypt = require("bcrypt");
 const { gbToBytes } = require("../utils/storagePlans");
 
 const userSchema = new mongoose.Schema(
@@ -93,6 +93,16 @@ const userSchema = new mongoose.Schema(
     },
     emailVerificationToken: String,
     emailVerificationExpires: Date,
+
+    // Set when this account was created or linked via "Continue with
+    // Google" — see authController.googleLogin. Login still goes through
+    // this app's own JWT afterward; this is just a stable link back to
+    // the Google account for re-matching on future Google sign-ins.
+    googleId: {
+      type: String,
+      index: true,
+      sparse: true,
+    },
 
     // A checkbox in the UI has little legal weight on its own — this is
     // the actual, timestamped record that the user agreed to the Terms

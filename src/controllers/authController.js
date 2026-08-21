@@ -8,6 +8,17 @@ const catchAsync = require('../utils/catchAsync');
 const { sendEmail } = require('../services/emailService');
 const { log, logFailure } = require('../middleware/activityLogger');
 const { v4: uuidv4 } = require('uuid');
+const { OAuth2Client } = require('google-auth-library');
+
+const googleOAuthClient = new OAuth2Client(
+  process.env.GOOGLE_CLIENT_ID,
+  process.env.GOOGLE_CLIENT_SECRET,
+  // 'postmessage' is the redirect_uri Google's own JS library expects when
+  // the authorization code came from its popup-based `initCodeClient` flow
+  // (frontend/src/components/SocialAuthButtons.jsx) rather than a real
+  // server-side redirect.
+  'postmessage'
+);
 
 /**
  * Generate JWT token
@@ -170,6 +181,85 @@ exports.login = catchAsync(async (req, res, next) => {
     User.updateOne({ _id: user._id }, { lastLogin: Date.now() }),
     log(req, 'login', 'user', user._id)
   ]).catch(err => console.error('Failed to update user or log activity:', err.message));
+});
+
+/**
+ * Google sign-in — no third-party auth provider involved. The frontend's
+ * "Continue with Google" button (components/SocialAuthButtons.jsx) uses
+ * Google's own Identity Services JS library to pop up Google's consent
+ * screen and get back a one-time authorization `code`; that's all this
+ * endpoint receives. It exchanges that code for Google's tokens itself
+ * (using this app's own Google Client ID + Secret, never exposed to the
+ * frontend) and verifies the returned ID token's signature — so by the
+ * time `payload` below is read, Google has already vouched for that email.
+ *
+ * This app's own JWT/refreshToken are still what gets issued at the end
+ * (via createSendToken, same as /login and /register) — this is one
+ * single session system, not a second one to keep in sync with.
+ */
+exports.googleLogin = catchAsync(async (req, res, next) => {
+  const { code, termsAccepted } = req.body;
+
+  let payload;
+  try {
+    const { tokens } = await googleOAuthClient.getToken(code);
+    const ticket = await googleOAuthClient.verifyIdToken({
+      idToken: tokens.id_token,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+    payload = ticket.getPayload();
+  } catch (err) {
+    // Authorization codes are single-use and expire in minutes — this is
+    // expected if the user double-submits or waits too long, not
+    // necessarily a real failure.
+    return next(new AppError('Could not verify your Google sign-in. Please try again.', 401));
+  }
+
+  const { sub: googleId, email, given_name, family_name, email_verified } = payload;
+  if (!email || !email_verified) {
+    return next(new AppError('Your Google account has no verified email address we can use.', 400));
+  }
+
+  let user = await User.findOne({ $or: [{ googleId }, { email }] });
+
+  if (!user) {
+    // Brand-new account — same rule as the regular registration form: no
+    // account gets created without an explicit, recorded Terms
+    // acceptance. The frontend only lets this request happen at all once
+    // its own "I agree to the Terms" checkbox is checked (Register.jsx);
+    // this is a defense-in-depth check, not the primary gate.
+    if (!termsAccepted) {
+      return next(new AppError('No account found for that Google email. Please create an account first.', 404));
+    }
+
+    user = await User.create({
+      tenantId: `tenant_${uuidv4()}`,
+      firstName: given_name || 'New',
+      lastName: family_name || 'User',
+      email,
+      // Social-only accounts never use this — a random value they'll
+      // never see, rather than making password optional app-wide.
+      password: crypto.randomBytes(32).toString('hex'),
+      role: 'Professional',
+      isVerified: true, // Google already verified this email
+      termsAcceptedAt: new Date(),
+      googleId,
+    });
+  } else if (!user.googleId) {
+    // An existing email/password account signing in with Google for the
+    // first time — link it rather than creating a second, disconnected
+    // account.
+    user.googleId = googleId;
+    await user.save({ validateBeforeSave: false });
+  }
+
+  createSendToken(user, 200, res);
+
+  Promise.all([
+    user.loginAttempts > 0 ? user.resetLoginAttempts() : Promise.resolve(),
+    User.updateOne({ _id: user._id }, { lastLogin: Date.now() }),
+    log(req, 'login', 'user', user._id),
+  ]).catch((err) => console.error('Failed to update user or log activity:', err.message));
 });
 
 /**

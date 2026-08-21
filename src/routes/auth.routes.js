@@ -9,6 +9,7 @@ const router = express.Router();
 // Public routes with rate limiting
 router.post('/register', authLimiter, validate('register'), authController.register);
 router.post('/login', authLimiter, validate('login'), authController.login);
+router.post('/google', authLimiter, validate('googleLogin'), authController.googleLogin);
 router.post('/forgot-password', passwordResetLimiter, validate('forgotPassword'), authController.forgotPassword);
 router.patch('/reset-password/:token', passwordResetLimiter, validate('resetPassword'), authController.resetPassword);
 router.get('/verify-email/:token', authController.verifyEmail);

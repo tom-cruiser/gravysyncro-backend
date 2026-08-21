@@ -19,6 +19,17 @@ const schemas = {
       .messages({ 'any.only': 'You must agree to the Terms of Service to register.' }),
   }),
 
+  // Google sign-in. `code` is the one-time authorization code Google's JS
+  // library hands back after the user completes the popup consent screen
+  // — the actual identity proof is what the controller gets back from
+  // Google when it exchanges that code, not anything in this request
+  // body. termsAccepted is only required the first time, when this
+  // creates a brand-new account.
+  googleLogin: Joi.object({
+    code: Joi.string().required(),
+    termsAccepted: Joi.boolean().optional(),
+  }),
+
   // User login
   login: Joi.object({
     email: Joi.string().email().required(),
