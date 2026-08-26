@@ -11,11 +11,17 @@
  * the 1st rolled around. This is safe to run repeatedly: for each tenant
  * it first checks whether an invoice already exists for the current
  * calendar month and skips if so, so nobody is ever double-billed.
+ *
+ * Tenants on an annual enterprise plan (billingCycle 'yearly') are
+ * skipped entirely — they're billed once a year, not monthly, and
+ * jobs/enterpriseSubscriptionExpiry.js is what watches their renewal
+ * instead of this job.
  */
 const cron = require('node-cron');
 const User = require('../models/User');
 const Invoice = require('../models/Invoice');
 const { createInvoiceForTenant } = require('../utils/invoices');
+const { getTenantStorageSummary } = require('../utils/tenantStorage');
 const logger = require('../utils/logger');
 
 const generateMonthlyInvoices = async () => {
@@ -34,6 +40,9 @@ const generateMonthlyInvoices = async () => {
     for (const tenantId of tenantIds) {
       const alreadyBilled = await Invoice.exists({ tenantId, periodStart });
       if (alreadyBilled) continue;
+
+      const tenantStorage = await getTenantStorageSummary(tenantId);
+      if (tenantStorage.billingCycle === 'yearly') continue;
 
       try {
         const invoice = await createInvoiceForTenant(tenantId, {

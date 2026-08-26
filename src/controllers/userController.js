@@ -4,7 +4,7 @@ const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const { log } = require('../middleware/activityLogger');
 const { getTenantStorageSummary, applyTenantStoragePlan } = require('../utils/tenantStorage');
-const { STORAGE_PLANS, STORAGE_PLAN_GB_OPTIONS } = require('../utils/storagePlans');
+const { STORAGE_PLANS } = require('../utils/storagePlans');
 const { emitTenantEvent } = require('../config/socket');
 
 /**
@@ -410,10 +410,18 @@ exports.updateSubscriptionPlan = catchAsync(async (req, res, next) => {
   const { storagePlanGb } = req.body;
   const normalizedPlan = Number(storagePlanGb);
 
-  if (!STORAGE_PLAN_GB_OPTIONS.includes(normalizedPlan)) {
+  // Only monthly plans can be self-served here — this endpoint doesn't
+  // collect payment or set billingCycle/currentPeriodEnd, so the annual
+  // enterprise tiers (Enterprise 1TB/2TB) must go through an admin via
+  // adminController.updateEnterpriseStorage instead.
+  const monthlyPlanGbOptions = STORAGE_PLANS
+    .filter((plan) => plan.billingCycle !== 'yearly')
+    .map((plan) => plan.storageGb);
+
+  if (!monthlyPlanGbOptions.includes(normalizedPlan)) {
     return next(
       new AppError(
-        `Invalid storage plan. Allowed plans are: ${STORAGE_PLAN_GB_OPTIONS.join(', ')} GB`,
+        `Invalid storage plan. Allowed plans are: ${monthlyPlanGbOptions.join(', ')} GB`,
         400
       )
     );

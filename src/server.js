@@ -11,6 +11,7 @@ const { startStorageQuotaNotifier } = require('./jobs/storageQuotaNotifier');
 const { startStaleUploadCleaner } = require('./jobs/staleUploadCleaner');
 const { startInvoiceBiller } = require('./jobs/invoiceBiller');
 const { startTrialAccessLock } = require('./jobs/trialAccessLock');
+const { startEnterpriseSubscriptionExpiry } = require('./jobs/enterpriseSubscriptionExpiry');
 const { setSocketServer } = require('./config/socket');
 const jwt = require('jsonwebtoken');
 const User = require('./models/User');
@@ -67,6 +68,7 @@ server.listen(PORT, () => {
   startStaleUploadCleaner();
   startInvoiceBiller();
   startTrialAccessLock();
+  startEnterpriseSubscriptionExpiry();
 });
 
 // Handle unhandled promise rejections

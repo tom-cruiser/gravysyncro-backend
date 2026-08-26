@@ -35,6 +35,8 @@ const notificationSchema = new mongoose.Schema(
         "support_response",
         "message_received",
         "contact_form_received",
+        "subscription_renewal_due",
+        "subscription_expired",
       ],
       required: true,
     },

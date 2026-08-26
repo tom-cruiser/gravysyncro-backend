@@ -7,7 +7,8 @@ const toNumber = (value) => Number(value || 0);
 
 const getTenantStorageSummary = async (tenantId) => {
   const users = await User.find({ tenantId }).select(
-    'storageUsed storageLimit storagePlanGb storageWarningLastSentAt storageWarningLastUsagePercent'
+    'storageUsed storageLimit storagePlanGb storageWarningLastSentAt storageWarningLastUsagePercent '
+    + 'billingCycle subscriptionStatus currentPeriodStart currentPeriodEnd'
   );
 
   const storageUsed = users.reduce((total, user) => total + toNumber(user.storageUsed), 0);
@@ -15,6 +16,9 @@ const getTenantStorageSummary = async (tenantId) => {
     || gbToBytes(DEFAULT_STORAGE_GB);
   const storagePlanGb = users.find((user) => Number(user.storagePlanGb || 0) > 0)?.storagePlanGb
     || DEFAULT_STORAGE_GB;
+  // Billing/period fields are assigned tenant-wide (see applyTenantStoragePlan),
+  // so any user carrying a non-default value represents the whole tenant.
+  const representative = users.find((user) => user.billingCycle === 'yearly') || users[0];
 
   return {
     storageUsed,
@@ -24,6 +28,10 @@ const getTenantStorageSummary = async (tenantId) => {
     storageUsedPercentage: toNumber(storageLimit) > 0
       ? Number(((storageUsed / toNumber(storageLimit)) * 100).toFixed(2))
       : 0,
+    billingCycle: representative?.billingCycle || 'monthly',
+    subscriptionStatus: representative?.subscriptionStatus || 'active',
+    currentPeriodStart: representative?.currentPeriodStart || null,
+    currentPeriodEnd: representative?.currentPeriodEnd || null,
     users,
   };
 };
@@ -33,7 +41,7 @@ const getTenantStorageMap = async (tenantIds = []) => {
   if (uniqueTenantIds.length === 0) return new Map();
 
   const users = await User.find({ tenantId: { $in: uniqueTenantIds } }).select(
-    'tenantId storageUsed storageLimit storagePlanGb'
+    'tenantId storageUsed storageLimit storagePlanGb billingCycle subscriptionStatus currentPeriodStart currentPeriodEnd'
   );
 
   const summaryMap = new Map();
@@ -44,6 +52,10 @@ const getTenantStorageMap = async (tenantIds = []) => {
       storageUsed: 0,
       storageLimit: 0,
       storagePlanGb: DEFAULT_STORAGE_GB,
+      billingCycle: 'monthly',
+      subscriptionStatus: 'active',
+      currentPeriodStart: null,
+      currentPeriodEnd: null,
     };
 
     existing.storageUsed += toNumber(user.storageUsed);
@@ -52,6 +64,15 @@ const getTenantStorageMap = async (tenantIds = []) => {
     }
     if (Number(user.storagePlanGb || 0) > 0) {
       existing.storagePlanGb = Number(user.storagePlanGb);
+    }
+    // Billing/period fields are assigned tenant-wide (see
+    // applyTenantStoragePlan) — once one user in the tenant shows 'yearly'
+    // that's the whole tenant's plan, so let it win over stale monthly data.
+    if (user.billingCycle === 'yearly' || !existing.currentPeriodEnd) {
+      existing.billingCycle = user.billingCycle || 'monthly';
+      existing.subscriptionStatus = user.subscriptionStatus || 'active';
+      existing.currentPeriodStart = user.currentPeriodStart || existing.currentPeriodStart;
+      existing.currentPeriodEnd = user.currentPeriodEnd || existing.currentPeriodEnd;
     }
 
     summaryMap.set(tenantId, existing);
@@ -70,7 +91,11 @@ const getTenantStorageMap = async (tenantIds = []) => {
   return summaryMap;
 };
 
-const applyTenantStoragePlan = async (tenantId, storagePlanGb) => {
+// `extraFields` lets callers set billing-cycle/subscription-period fields
+// alongside the plan itself (see adminController.updateEnterpriseStorage for
+// the annual-plan case). Left empty, behavior is unchanged from before those
+// fields existed — self-service monthly plan changes don't touch them.
+const applyTenantStoragePlan = async (tenantId, storagePlanGb, extraFields = {}) => {
   const normalizedPlan = Number(storagePlanGb);
   const storageLimit = gbToBytes(normalizedPlan);
 
@@ -80,6 +105,7 @@ const applyTenantStoragePlan = async (tenantId, storagePlanGb) => {
       $set: {
         storagePlanGb: normalizedPlan,
         storageLimit,
+        ...extraFields,
       },
     }
   );

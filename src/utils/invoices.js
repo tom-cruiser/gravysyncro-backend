@@ -10,8 +10,13 @@ const { getTenantStorageSummary } = require('./tenantStorage');
 // Revisit this once real billing addresses + tax rules exist.
 const TAX_RATE_PERCENT = 0;
 
-const findPlanByStorageGb = (storageGb) => (
-  STORAGE_PLANS.find((plan) => plan.storageGb === Number(storageGb)) || STORAGE_PLANS[0]
+// billingCycle disambiguates plans that share a storageGb — e.g. the 1 TB
+// "Scale" monthly plan and the "Enterprise 1TB (Annual)" plan — so a
+// yearly tenant doesn't get billed at the wrong (monthly) plan's price.
+const findPlanByStorageGb = (storageGb, billingCycle = 'monthly') => (
+  STORAGE_PLANS.find((plan) => plan.storageGb === Number(storageGb) && plan.billingCycle === billingCycle)
+    || STORAGE_PLANS.find((plan) => plan.storageGb === Number(storageGb))
+    || STORAGE_PLANS[0]
 );
 
 // Sequential, human-readable invoice numbers scoped per tenant, e.g.
@@ -55,16 +60,23 @@ const buildBillToSnapshot = async (tenantId) => {
  */
 const createInvoiceForTenant = async (tenantId, { periodStart, periodEnd, generatedBy = 'cron' } = {}) => {
   const storageSummary = await getTenantStorageSummary(tenantId);
-  const plan = findPlanByStorageGb(storageSummary.storagePlanGb);
+  const plan = findPlanByStorageGb(storageSummary.storagePlanGb, storageSummary.billingCycle);
+  const isAnnual = plan.billingCycle === 'yearly';
 
   const now = new Date();
-  const resolvedPeriodEnd = periodEnd || now;
+  const resolvedPeriodEnd = periodEnd
+    || (isAnnual ? storageSummary.currentPeriodEnd : null)
+    || now;
   const resolvedPeriodStart = periodStart
+    || (isAnnual ? storageSummary.currentPeriodStart : null)
     || new Date(resolvedPeriodEnd.getFullYear(), resolvedPeriodEnd.getMonth(), 1);
 
-  const unitAmountCents = Math.round(Number(plan.priceUsdPerMonth || 0) * 100);
+  const unitAmountCents = Math.round(
+    Number((isAnnual ? plan.priceUsdPerYear : plan.priceUsdPerMonth) || 0) * 100
+  );
   const lineItems = [{
-    description: `${plan.name} plan — ${plan.storageGb} GB shared enterprise storage (monthly)`,
+    description: `${plan.name} plan — ${plan.storageGb} GB shared enterprise storage `
+      + `(${isAnnual ? 'annual' : 'monthly'})`,
     quantity: 1,
     unitAmountCents,
     amountCents: unitAmountCents,

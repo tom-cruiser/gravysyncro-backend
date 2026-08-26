@@ -4,7 +4,7 @@ const ActivityLog = require('../models/ActivityLog');
 const Notification = require('../models/Notification');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
-const { STORAGE_PLAN_GB_OPTIONS, gbToBytes } = require('../utils/storagePlans');
+const { STORAGE_PLAN_GB_OPTIONS, findPlanById, gbToBytes } = require('../utils/storagePlans');
 const { getTenantStorageMap, getTenantStorageSummary, applyTenantStoragePlan } = require('../utils/tenantStorage');
 const { emitTenantEvent } = require('../config/socket');
 
@@ -125,6 +125,10 @@ exports.getAllUsers = catchAsync(async (req, res, next) => {
       storageUsedPercentage: Number(user.storageLimit || 0) > 0
         ? Number(((Number(user.storageUsed || 0) / Number(user.storageLimit || 0)) * 100).toFixed(2))
         : 0,
+      billingCycle: user.billingCycle || 'monthly',
+      subscriptionStatus: user.subscriptionStatus || 'active',
+      currentPeriodStart: user.currentPeriodStart || null,
+      currentPeriodEnd: user.currentPeriodEnd || null,
     };
 
     return {
@@ -134,6 +138,10 @@ exports.getAllUsers = catchAsync(async (req, res, next) => {
       storagePlanGb: tenantStorage.storagePlanGb,
       storageRemaining: tenantStorage.storageRemaining,
       storageUsedPercentage: tenantStorage.storageUsedPercentage,
+      billingCycle: tenantStorage.billingCycle,
+      subscriptionStatus: tenantStorage.subscriptionStatus,
+      currentPeriodStart: tenantStorage.currentPeriodStart,
+      currentPeriodEnd: tenantStorage.currentPeriodEnd,
     };
   });
 
@@ -182,6 +190,10 @@ exports.getAllTenants = catchAsync(async (req, res, next) => {
         storagePlanGb: 50,
         storageRemaining: gbToBytes(50),
         storageUsedPercentage: 0,
+        billingCycle: 'monthly',
+        subscriptionStatus: 'active',
+        currentPeriodStart: null,
+        currentPeriodEnd: null,
       };
 
       return {
@@ -198,6 +210,10 @@ exports.getAllTenants = catchAsync(async (req, res, next) => {
         storagePlanGb: storage.storagePlanGb,
         storageRemaining: storage.storageRemaining,
         storageUsedPercentage: storage.storageUsedPercentage,
+        billingCycle: storage.billingCycle,
+        subscriptionStatus: storage.subscriptionStatus,
+        currentPeriodStart: storage.currentPeriodStart,
+        currentPeriodEnd: storage.currentPeriodEnd,
       };
     })
   );
@@ -609,23 +625,61 @@ exports.resetUserPassword = catchAsync(async (req, res, next) => {
 });
 
 /**
- * Update user storage limit plan (admin only)
+ * Update user storage limit plan (admin only).
+ *
+ * Accepts either:
+ * - `planId`: resolves a specific plan from STORAGE_PLANS, including the
+ *   annual enterprise tiers ('enterprise-1tb-annual' / 'enterprise-2tb-annual').
+ *   This is the only way to select an annual plan, since its storage size
+ *   alone (1 TB) is ambiguous with the existing monthly "Scale" plan.
+ * - `storagePlanGb`: legacy path, kept for the self-service billing page
+ *   and any existing integrations — always resolves to a monthly plan.
+ *
+ * Assigning (or re-assigning, i.e. renewing) an annual plan sets
+ * currentPeriodStart to now and currentPeriodEnd to exactly one year later,
+ * and marks subscriptionStatus 'active'. jobs/enterpriseSubscriptionExpiry.js
+ * watches currentPeriodEnd from there on.
  */
 const updateEnterpriseStorage = async ({ tenantId, req, res, next }) => {
-  const { storagePlanGb } = req.body;
-  const normalizedPlan = Number(storagePlanGb);
+  const { storagePlanGb, planId } = req.body;
 
-  if (!STORAGE_PLAN_GB_OPTIONS.includes(normalizedPlan)) {
-    return next(
-      new AppError(
-        `Invalid storage plan. Allowed plans are: ${STORAGE_PLAN_GB_OPTIONS.join(', ')} GB`,
-        400
-      )
-    );
+  let plan = null;
+
+  if (planId) {
+    plan = findPlanById(planId);
+    if (!plan) {
+      return next(new AppError(`Invalid plan id "${planId}".`, 400));
+    }
+  } else {
+    const normalizedPlan = Number(storagePlanGb);
+    if (!STORAGE_PLAN_GB_OPTIONS.includes(normalizedPlan)) {
+      return next(
+        new AppError(
+          `Invalid storage plan. Allowed plans are: ${STORAGE_PLAN_GB_OPTIONS.join(', ')} GB`,
+          400
+        )
+      );
+    }
+    // A bare GB number always means the monthly plan of that size —
+    // annual tiers must be selected explicitly via planId.
+    plan = { storageGb: normalizedPlan, billingCycle: 'monthly', id: null, name: null };
   }
 
+  const normalizedPlan = plan.storageGb;
+  const isAnnual = plan.billingCycle === 'yearly';
+  const now = new Date();
+  const oneYearFromNow = new Date(now);
+  oneYearFromNow.setFullYear(oneYearFromNow.getFullYear() + 1);
+
+  const subscriptionFields = {
+    billingCycle: isAnnual ? 'yearly' : 'monthly',
+    subscriptionStatus: 'active',
+    currentPeriodStart: isAnnual ? now : null,
+    currentPeriodEnd: isAnnual ? oneYearFromNow : null,
+  };
+
   const tenantStorageBefore = await getTenantStorageSummary(tenantId);
-  const storageLimit = await applyTenantStoragePlan(tenantId, normalizedPlan);
+  const storageLimit = await applyTenantStoragePlan(tenantId, normalizedPlan, subscriptionFields);
 
   await ActivityLog.create({
     tenantId,
@@ -636,7 +690,12 @@ const updateEnterpriseStorage = async ({ tenantId, req, res, next }) => {
       action: 'enterprise_storage_updated',
       tenantId,
       oldPlanGb: tenantStorageBefore.storagePlanGb || 50,
+      oldBillingCycle: tenantStorageBefore.billingCycle || 'monthly',
       newPlanGb: normalizedPlan,
+      newPlanId: plan.id,
+      billingCycle: subscriptionFields.billingCycle,
+      currentPeriodStart: subscriptionFields.currentPeriodStart,
+      currentPeriodEnd: subscriptionFields.currentPeriodEnd,
       updatedBy: req.user.email,
     },
     ipAddress: req.ip,
@@ -652,12 +711,15 @@ const updateEnterpriseStorage = async ({ tenantId, req, res, next }) => {
     storageLimit,
     storageUsed: tenantStorage.storageUsed,
     storageUsedPercentage: tenantStorage.storageUsedPercentage,
+    billingCycle: tenantStorage.billingCycle,
+    subscriptionStatus: tenantStorage.subscriptionStatus,
+    currentPeriodEnd: tenantStorage.currentPeriodEnd,
     updatedAt: new Date().toISOString(),
   });
 
   res.status(200).json({
     status: 'success',
-    message: `Enterprise storage plan updated to ${normalizedPlan} GB`,
+    message: `Enterprise storage plan updated to ${plan.name || `${normalizedPlan} GB`}`,
     data: {
       tenant: {
         tenantId,
@@ -665,6 +727,10 @@ const updateEnterpriseStorage = async ({ tenantId, req, res, next }) => {
         storageUsed: tenantStorage.storageUsed,
         storageLimit,
         storageUsedPercentage: tenantStorage.storageUsedPercentage,
+        billingCycle: tenantStorage.billingCycle,
+        subscriptionStatus: tenantStorage.subscriptionStatus,
+        currentPeriodStart: tenantStorage.currentPeriodStart,
+        currentPeriodEnd: tenantStorage.currentPeriodEnd,
       },
     },
   });
@@ -680,7 +746,6 @@ exports.updateUserStorageLimit = catchAsync(async (req, res, next) => {
 
   return updateEnterpriseStorage({
     tenantId: user.tenantId,
-    storagePlanGb: req.body.storagePlanGb,
     req,
     res,
     next,
@@ -696,7 +761,6 @@ exports.updateTenantStorageLimit = catchAsync(async (req, res, next) => {
 
   return updateEnterpriseStorage({
     tenantId,
-    storagePlanGb: req.body.storagePlanGb,
     req,
     res,
     next,

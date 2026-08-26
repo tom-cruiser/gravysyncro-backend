@@ -150,8 +150,12 @@ const userSchema = new mongoose.Schema(
       default: 0,
     },
     storagePlanGb: {
+      // 500/1000/2000 cover the Growth, Scale, and Enterprise-2TB-Annual
+      // plans (see utils/storagePlans.js) — kept in sync with that file's
+      // STORAGE_PLAN_GB_OPTIONS so an admin/self-service plan change never
+      // fails schema validation.
       type: Number,
-      enum: [50, 100, 200],
+      enum: [50, 100, 200, 500, 1000, 2000],
       default: 50,
     },
     storageLimit: {
@@ -165,6 +169,41 @@ const userSchema = new mongoose.Schema(
     storageWarningLastUsagePercent: {
       type: Number,
       default: 0,
+    },
+
+    // Billing cycle for the tenant's current storage plan. Set alongside
+    // storagePlanGb whenever an admin assigns a plan (see
+    // adminController.updateEnterpriseStorage) — 'yearly' for the annual
+    // enterprise tiers, 'monthly' for everything else.
+    billingCycle: {
+      type: String,
+      enum: ['monthly', 'yearly'],
+      default: 'monthly',
+    },
+
+    // Lifecycle status of the current billing period. Only meaningful for
+    // 'yearly' plans today: jobs/enterpriseSubscriptionExpiry.js flips this
+    // to 'pending_renewal' as the period end approaches and to 'expired'
+    // once it's reached, so the admin dashboard knows to chase a renewal
+    // invoice. Monthly plans stay 'active' — there's no billing period to
+    // track for them yet.
+    subscriptionStatus: {
+      type: String,
+      enum: ['active', 'expired', 'pending_renewal'],
+      default: 'active',
+    },
+
+    // Start/end of the current annual billing period. Set (or reset) each
+    // time an admin assigns or renews an annual plan — currentPeriodEnd is
+    // always exactly one year after currentPeriodStart. Null for
+    // month-to-month plans, which don't have a fixed period to expire.
+    currentPeriodStart: {
+      type: Date,
+      default: null,
+    },
+    currentPeriodEnd: {
+      type: Date,
+      default: null,
     },
 
     // Subscription trial / access-lock
@@ -199,6 +238,7 @@ const userSchema = new mongoose.Schema(
 userSchema.index({ tenantId: 1, email: 1 }, { unique: true });
 userSchema.index({ tenantId: 1, role: 1 });
 userSchema.index({ accessLevel: 1, isSubscriptionActive: 1, trialExpiresAt: 1 });
+userSchema.index({ billingCycle: 1, subscriptionStatus: 1, currentPeriodEnd: 1 });
 
 // Virtual for full name
 userSchema.virtual("fullName").get(function () {
