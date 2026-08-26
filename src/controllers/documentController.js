@@ -1,3 +1,4 @@
+const fs = require('fs');
 const Document = require('../models/Document');
 const User = require('../models/User');
 const Workspace = require('../models/Workspace');
@@ -23,6 +24,23 @@ const isLikelyPdfBuffer = (buffer) => {
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) return false;
   const headerScan = buffer.subarray(0, Math.min(buffer.length, 1024)).toString('latin1');
   return headerScan.includes('%PDF-');
+};
+
+// Same check as isLikelyPdfBuffer, but for a file already on disk — used on
+// the upload path, where large documents are streamed via multer's disk
+// storage instead of being held in memory as a Buffer (see uploadDocument).
+const isLikelyPdfFile = (filePath) => {
+  let fd;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const header = Buffer.alloc(1024);
+    const bytesRead = fs.readSync(fd, header, 0, 1024, 0);
+    return header.subarray(0, bytesRead).toString('latin1').includes('%PDF-');
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
 };
 
 const getWorkspaceParticipantIds = (workspace) => {
@@ -65,12 +83,22 @@ exports.uploadDocument = catchAsync(async (req, res, next) => {
     return next(new AppError('Please provide a file to upload', 400));
   }
 
-  if (!Buffer.isBuffer(req.file.buffer) || req.file.buffer.length === 0) {
+  // Documents are streamed to a temp file on disk by multer (see
+  // middleware/upload.js) rather than buffered in memory — necessary now
+  // that the per-file cap is 700MB, since holding files that size as an
+  // in-memory Buffer risked crashing the process under load. Whatever
+  // happens below, make sure that temp file is removed once the response
+  // is sent, regardless of success or failure.
+  res.on('finish', () => {
+    fs.unlink(req.file.path, () => {});
+  });
+
+  if (!req.file.path || !req.file.size) {
     return next(new AppError('Uploaded file is empty or invalid. Please try again.', 400));
   }
 
   if (req.file.mimetype === 'application/pdf') {
-    if (!isLikelyPdfBuffer(req.file.buffer)) {
+    if (!isLikelyPdfFile(req.file.path)) {
       return next(new AppError('Invalid PDF file content. Please upload a valid PDF document.', 400));
     }
   }
@@ -96,17 +124,28 @@ exports.uploadDocument = catchAsync(async (req, res, next) => {
   const normalizedRelativePath = normalizePath(relativePath) ||
     (normalizedFolderPath ? `${normalizedFolderPath}/${resolvedOriginalName}` : resolvedOriginalName);
 
-  // Process image if it's an image
-  let fileBuffer = req.file.buffer;
+  // Images are resized before upload, which means materializing the result
+  // as a Buffer — fine, since real-world images come nowhere near the 700MB
+  // document cap. Everything else (the case that actually needs to handle
+  // large files — PDFs, archives, videos-as-documents, etc.) is streamed
+  // straight from the temp file to Wasabi without ever loading it into
+  // memory, so upload size is no longer bounded by available RAM.
+  let uploadBody;
+  let fileSizeBytes;
   if (req.file.mimetype.startsWith('image/')) {
     try {
-      fileBuffer = await sharp(req.file.buffer)
+      const resizedBuffer = await sharp(req.file.path)
         .resize(2000, 2000, { fit: 'inside', withoutEnlargement: true })
         .jpeg({ quality: 90 })
         .toBuffer();
+      uploadBody = resizedBuffer;
+      fileSizeBytes = resizedBuffer.length;
     } catch (sharpError) {
       return next(new AppError(`Image processing failed: ${sharpError.message}`, 400));
     }
+  } else {
+    uploadBody = fs.createReadStream(req.file.path);
+    fileSizeBytes = req.file.size;
   }
 
   const [latestUser, tenantStorage] = await Promise.all([
@@ -117,7 +156,6 @@ exports.uploadDocument = catchAsync(async (req, res, next) => {
     return next(new AppError('User not found', 404));
   }
 
-  const fileSizeBytes = fileBuffer.length;
   const projectedUsage = Number(tenantStorage.storageUsed || 0) + fileSizeBytes;
   if (projectedUsage > Number(tenantStorage.storageLimit || 0)) {
     const availableBytes = Math.max(Number(tenantStorage.storageLimit || 0) - Number(tenantStorage.storageUsed || 0), 0);
@@ -132,7 +170,7 @@ exports.uploadDocument = catchAsync(async (req, res, next) => {
   // Upload to Wasabi
   const fileKey = `${req.user.tenantId}/documents/${Date.now()}-${resolvedOriginalName}`;
   try {
-    await uploadFile(fileKey, fileBuffer, req.file.mimetype);
+    await uploadFile(fileKey, uploadBody, req.file.mimetype);
   } catch (wasabiError) {
     if (wasabiError.code === 'Forbidden' || wasabiError.code === 'AccessDenied') {
       return next(new AppError('Storage service permission denied. Please verify Wasabi credentials.', 503));

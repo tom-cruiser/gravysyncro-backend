@@ -37,9 +37,13 @@ exports.authLimiter = rateLimit({
 });
 
 // Upload rate limiter
+// Documents upload one file per request (no batching on the wire), so a
+// single 15,000-file batch means up to 15,000 requests in short order —
+// this cap has to comfortably clear that or bulk uploads get throttled with
+// a 429 partway through.
 exports.uploadLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: parseInt(process.env.UPLOAD_LIMIT_MAX_REQUESTS) || 300,
+  max: parseInt(process.env.UPLOAD_LIMIT_MAX_REQUESTS) || 20000,
   skip: () => isLimiterDisabled('ENABLE_UPLOAD_RATE_LIMITING'),
   message: 'Too many file uploads, please try again later.',
   handler: (req, res, next) => {

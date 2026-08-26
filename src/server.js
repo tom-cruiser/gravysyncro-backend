@@ -29,8 +29,17 @@ connectDB();
 
 const server = http.createServer(app);
 
-// Increase timeout for file uploads (5 minutes for larger files)
-server.timeout = 5 * 60 * 1000;
+// Increase timeouts for large file uploads (documents can now be up to
+// 700MB). `server.timeout` is the idle-socket timeout; Node's http server
+// also independently caps the total time to receive a full request via
+// `requestTimeout` (default 5 minutes since Node 18) — a 700MB upload on a
+// modest connection can easily take longer than that, so both need raising
+// or large uploads get cut off partway through regardless of the socket
+// staying active. `headersTimeout` only covers the request headers, not the
+// body, so it's left short.
+server.timeout = 60 * 60 * 1000; // 60 minutes
+server.requestTimeout = 60 * 60 * 1000; // 60 minutes
+server.headersTimeout = 2 * 60 * 1000; // 2 minutes
 server.keepAliveTimeout = 65 * 1000;
 
 const io = new Server(server, {
