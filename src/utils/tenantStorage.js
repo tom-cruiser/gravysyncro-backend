@@ -93,11 +93,18 @@ const getTenantStorageMap = async (tenantIds = []) => {
 
 // `extraFields` lets callers set billing-cycle/subscription-period fields
 // alongside the plan itself (see adminController.updateEnterpriseStorage for
-// the annual-plan case). Left empty, behavior is unchanged from before those
-// fields existed — self-service monthly plan changes don't touch them.
+// the annual-plan case). Plan changes also restore access by default, because
+// the paid-feature gate checks `isSubscriptionActive` on the user record.
 const applyTenantStoragePlan = async (tenantId, storagePlanGb, extraFields = {}) => {
   const normalizedPlan = Number(storagePlanGb);
   const storageLimit = gbToBytes(normalizedPlan);
+
+  const accessFields = {
+    isSubscriptionActive: true,
+    accessLevel: 'active',
+    trialExpiresAt: null,
+    ...extraFields,
+  };
 
   await User.updateMany(
     { tenantId },
@@ -105,7 +112,7 @@ const applyTenantStoragePlan = async (tenantId, storagePlanGb, extraFields = {})
       $set: {
         storagePlanGb: normalizedPlan,
         storageLimit,
-        ...extraFields,
+        ...accessFields,
       },
     }
   );
