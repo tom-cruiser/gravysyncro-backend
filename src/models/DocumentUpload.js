@@ -77,8 +77,7 @@ const documentUploadSchema = new mongoose.Schema({
   },
   uploadId: {
     type: String,
-    required: true,
-    unique: true,
+    default: null,
   },
   uploadStatus: {
     type: String,
@@ -120,6 +119,13 @@ const documentUploadSchema = new mongoose.Schema({
 
 documentUploadSchema.index({ tenantId: 1, uploadedBy: 1, createdAt: -1 });
 documentUploadSchema.index({ tenantId: 1, uploadStatus: 1, createdAt: -1 });
+documentUploadSchema.index(
+  { uploadId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { uploadId: { $type: 'string' } },
+  },
+);
 
 documentUploadSchema.methods.canUserAccess = function (userId) {
   if (!userId) return false;
