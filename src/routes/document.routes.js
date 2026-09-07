@@ -13,6 +13,13 @@ router.use(protect);
 // Document archiving is a core paid feature — locked out once the trial expires.
 router.use(requireActiveSubscription);
 
+// Multipart document ingestion control-plane routes
+router.post('/uploads/initiate', validate('initiateDocumentUpload'), documentController.initiateUploadSession);
+router.get('/uploads/:id/part-url', documentController.getDocumentUploadPartUrl);
+router.get('/uploads/:id/parts', documentController.getDocumentUploadParts);
+router.post('/uploads/:id/complete', validate('completeDocumentUpload'), documentController.completeDocumentUpload);
+router.post('/uploads/:id/abort', documentController.abortDocumentUpload);
+
 // Document routes
 router
   .route('/')

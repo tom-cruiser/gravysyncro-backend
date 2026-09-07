@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const Video = require('../models/Video');
+const DocumentUpload = require('../models/DocumentUpload');
 const { abortMultipartUpload } = require('../config/wasabi');
 const logger = require('../utils/logger');
 
@@ -79,14 +80,49 @@ const cleanStaleUploads = async () => {
   }
 };
 
+const cleanStaleDocumentUploads = async () => {
+  try {
+    const cutoff = new Date(Date.now() - STALE_THRESHOLD_MS);
+    const stale = await DocumentUpload.find({
+      uploadStatus: { $in: ['pending', 'uploading'] },
+      createdAt: { $lt: cutoff },
+      isDeleted: false,
+    });
+
+    if (!stale.length) return;
+
+    logger.info(`[staleUploadCleaner] Found ${stale.length} stale document upload session(s) to clean up.`);
+
+    for (const uploadSession of stale) {
+      if (uploadSession.uploadId) {
+        try {
+          await abortMultipartUpload(uploadSession.storageKey, uploadSession.uploadId);
+        } catch (err) {
+          // Already cleaned up or expired — ignore
+        }
+      }
+      uploadSession.uploadStatus = 'aborted';
+      uploadSession.uploadId = null;
+      uploadSession.isDeleted = true;
+      uploadSession.deletedAt = new Date();
+      await uploadSession.save();
+      logger.info(`[staleUploadCleaner] Aborted stale document upload session: ${uploadSession._id} (${uploadSession.fileName})`);
+    }
+  } catch (err) {
+    logger.error('[staleUploadCleaner] Error during document upload cleanup:', err.message);
+  }
+};
+
 const startStaleUploadCleaner = () => {
   // Run immediately on startup
   cleanStaleUploads();
+  cleanStaleDocumentUploads();
   cleanOrphanedTempFiles();
   // Then every 6 hours
   cron.schedule('0 */6 * * *', cleanStaleUploads);
+  cron.schedule('0 */6 * * *', cleanStaleDocumentUploads);
   cron.schedule('0 */6 * * *', cleanOrphanedTempFiles);
   logger.info('[staleUploadCleaner] Scheduled stale upload cleanup every 6 hours.');
 };
 
-module.exports = { startStaleUploadCleaner, cleanStaleUploads, cleanOrphanedTempFiles };
+module.exports = { startStaleUploadCleaner, cleanStaleUploads, cleanStaleDocumentUploads, cleanOrphanedTempFiles };

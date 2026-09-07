@@ -80,7 +80,21 @@ if (process.env.NODE_ENV === "development") {
 // Rate limiting (disabled in development for performance)
 const rateLimitingEnabled = process.env.ENABLE_RATE_LIMITING !== 'false';
 if (process.env.NODE_ENV === "production" && rateLimitingEnabled) {
-  app.use("/api", apiLimiter);
+  app.use("/api", (req, res, next) => {
+    const isHighVolumeUpload =
+      req.method === 'POST' &&
+      (
+        req.path === '/v1/documents'
+        || req.path.startsWith('/v1/documents/uploads')
+        || req.path.startsWith('/v1/audios')
+      );
+
+    if (isHighVolumeUpload) {
+      return next();
+    }
+
+    return apiLimiter(req, res, next);
+  });
   // logRequest is a route-level factory, not global middleware
 }
 

@@ -104,6 +104,42 @@ const schemas = {
     workspaceId: Joi.string().optional().allow('', null),
   }),
 
+  initiateDocumentUpload: Joi.object({
+    fileName: Joi.string().trim().min(1).max(500).required(),
+    mimeType: Joi.string().trim().required(),
+    fileSize: Joi.number().integer().min(1).max(734003200).required(),
+    title: Joi.string().trim().max(255).optional().allow(''),
+    description: Joi.string().trim().max(1000).optional().allow(''),
+    type: Joi.string().valid('General', 'Contract', 'Legal', 'Academic', 'Financial', 'Personal', 'Other').default('General'),
+    category: Joi.string().trim().optional().allow(''),
+    tags: Joi.alternatives().try(
+      Joi.array().items(Joi.string().trim()),
+      Joi.string().trim().allow('')
+    ).optional(),
+    workspaceId: Joi.string().optional().allow('', null),
+    folderId: Joi.string().optional().allow('', null),
+    folderPath: Joi.string().trim().optional().allow(''),
+    relativePath: Joi.string().trim().optional().allow(''),
+  }),
+
+  completeDocumentUpload: Joi.object({
+    parts: Joi.array().items(Joi.object({
+      PartNumber: Joi.number().integer().min(1).required(),
+      ETag: Joi.string().trim().required(),
+    })).min(1).required(),
+    title: Joi.string().trim().max(255).optional().allow(''),
+    description: Joi.string().trim().max(1000).optional().allow(''),
+    type: Joi.string().valid('General', 'Contract', 'Legal', 'Academic', 'Financial', 'Personal', 'Other').default('General'),
+    category: Joi.string().trim().optional().allow(''),
+    tags: Joi.alternatives().try(
+      Joi.array().items(Joi.string().trim()),
+      Joi.string().trim().allow('')
+    ).optional(),
+    folderId: Joi.string().optional().allow('', null),
+    folderPath: Joi.string().trim().optional().allow(''),
+    relativePath: Joi.string().trim().optional().allow(''),
+  }),
+
   // Update document
   updateDocument: Joi.object({
     title: Joi.string().trim().min(1).max(255).optional(),

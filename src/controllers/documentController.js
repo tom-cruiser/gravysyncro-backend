@@ -1,10 +1,21 @@
 const fs = require('fs');
 const Document = require('../models/Document');
+const DocumentUpload = require('../models/DocumentUpload');
 const User = require('../models/User');
 const Workspace = require('../models/Workspace');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
-const { uploadFile, downloadFile, deleteFile, getSignedUrl } = require('../config/wasabi');
+const {
+  uploadFile,
+  downloadFile,
+  deleteFile,
+  getSignedUrl,
+  createMultipartUpload,
+  getUploadPartSignedUrl,
+  completeMultipartUpload,
+  abortMultipartUpload,
+  listParts,
+} = require('../config/wasabi');
 const { emitTenantEvent } = require('../config/socket');
 const { log } = require('../middleware/activityLogger');
 const { sendDocumentSharedEmail } = require('../services/emailService');
@@ -74,6 +85,458 @@ const ensureWorkspaceWritable = async (req, workspaceId) => {
 };
 
 const escapeRegExp = (value = '') => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const MAX_DOCUMENT_SIZE = 734003200;
+const DOCUMENT_PART_SIZE = 10 * 1024 * 1024;
+const DOCUMENT_ALLOWED_MIME_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'text/plain',
+  'application/zip',
+  'application/x-rar-compressed',
+]);
+const DOCUMENT_ALLOWED_EXTENSIONS = new Set([
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'jpg', 'jpeg', 'png', 'gif', 'webp', 'txt', 'zip', 'rar',
+]);
+
+const normalizePath = (value = '') =>
+  String(value)
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(Boolean)
+    .join('/');
+
+const normalizeStorageFileName = (name = 'document') => {
+  const cleaned = String(name)
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  return cleaned || `document-${Date.now()}`;
+};
+
+const getFileExtension = (fileName = '') => {
+  const base = String(fileName || '').trim();
+  if (!base.includes('.')) return 'bin';
+  return base.split('.').pop().toLowerCase() || 'bin';
+};
+
+const validateMultipartDocumentFile = (fileName, mimeType, fileSize) => {
+  const extension = getFileExtension(fileName);
+  const mimeAllowed = DOCUMENT_ALLOWED_MIME_TYPES.has(mimeType);
+  const extAllowed = DOCUMENT_ALLOWED_EXTENSIONS.has(extension);
+
+  if (!mimeAllowed && !extAllowed) {
+    throw new AppError(
+      `File type ${mimeType || extension || 'unknown'} is not supported. Accepted formats: PDF, Word, Excel, PowerPoint, TXT, ZIP, RAR, and common image formats.`,
+      400,
+    );
+  }
+
+  if (Number(fileSize) > MAX_DOCUMENT_SIZE) {
+    throw new AppError('File exceeds the 700 MB document limit.', 400);
+  }
+};
+
+const createDocumentFromUploadSession = async ({
+  req,
+  session,
+  fileSizeBytes,
+  fileKey,
+  resolvedOriginalName,
+  normalizedFolderPath,
+  normalizedRelativePath,
+  title,
+  description,
+  type,
+  category,
+  tags,
+}) => {
+  const workspace = await ensureWorkspaceWritable(req, session.workspaceId ? String(session.workspaceId) : null);
+  const [latestUser, tenantStorage] = await Promise.all([
+    User.findById(req.user._id).select('storageUsed storageLimit'),
+    getTenantStorageSummary(req.user.tenantId),
+  ]);
+
+  if (!latestUser) {
+    throw new AppError('User not found', 404);
+  }
+
+  const projectedUsage = Number(tenantStorage.storageUsed || 0) + fileSizeBytes;
+  if (projectedUsage > Number(tenantStorage.storageLimit || 0)) {
+    const availableBytes = Math.max(Number(tenantStorage.storageLimit || 0) - Number(tenantStorage.storageUsed || 0), 0);
+    throw new AppError(
+      `Enterprise storage limit reached. Available space: ${(availableBytes / (1024 * 1024)).toFixed(2)} MB. Please ask your admin to upgrade the enterprise plan.`,
+      403,
+    );
+  }
+
+  const folderName = normalizedFolderPath ? normalizedFolderPath.split('/').pop() : 'root';
+  const pathValue = normalizedFolderPath ? `/${normalizedFolderPath}` : '/';
+  const fileExtension = getFileExtension(resolvedOriginalName);
+  const parsedTags = Array.isArray(tags)
+    ? tags.map((tag) => String(tag).trim()).filter(Boolean)
+    : String(tags || '')
+      .split(',')
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+
+  const document = new Document({
+    tenantId: req.user.tenantId,
+    owner: req.user._id,
+    uploadedBy: req.user._id,
+    title: title || resolvedOriginalName,
+    name: title || resolvedOriginalName,
+    description: description || '',
+    type: type || category || 'General',
+    fileName: resolvedOriginalName,
+    originalName: resolvedOriginalName,
+    fileSize: fileSizeBytes,
+    fileExtension,
+    storageKey: fileKey,
+    checksum: `${Date.now()}-${fileSizeBytes}`,
+    filename: resolvedOriginalName,
+    fileKey,
+    mimeType: session.mimeType,
+    size: fileSizeBytes,
+    category: category || type || 'General',
+    tags: parsedTags,
+    folderId: session.folderId || null,
+    workspaceId: session.workspaceId || null,
+    folder: folderName,
+    path: pathValue,
+    folderPath: normalizedFolderPath,
+    relativePath: normalizedRelativePath,
+    versions: [{
+      version: 1,
+      fileKey,
+      size: fileSizeBytes,
+      uploadedBy: req.user._id,
+      uploadedAt: new Date(),
+      changes: 'Initial upload',
+    }],
+    versionHistory: [{
+      version: 1,
+      storageKey: fileKey,
+      updatedBy: req.user._id,
+      updatedAt: new Date(),
+      changes: 'Initial upload',
+      fileSize: fileSizeBytes,
+    }],
+  });
+
+  document.$locals.currentUser = req.user;
+  document.$locals.assetActivity = {
+    action: 'UPLOAD',
+    previousState: null,
+    newState: document.lifecycleState,
+    details: {
+      version: 1,
+    },
+  };
+
+  await document.save();
+
+  await User.findByIdAndUpdate(req.user._id, {
+    $inc: { storageUsed: fileSizeBytes },
+  });
+
+  await log(req, 'document_upload', 'document', document._id, {
+    documentName: document.name,
+    version: document.version || 1,
+  });
+
+  if (workspace) {
+    const participants = getWorkspaceParticipantIds(workspace).filter((userId) => userId !== req.user._id.toString());
+    await Promise.all(participants.map((userId) => createNotification({
+      tenantId: req.user.tenantId,
+      user: userId,
+      type: 'workspace_uploaded',
+      title: 'New file uploaded',
+      message: `${document.name} was uploaded to ${workspace.name}`,
+      relatedDocument: document._id,
+      relatedWorkspace: workspace._id,
+      actionUrl: `/documents?view=${document._id}`,
+    })));
+  }
+
+  return document;
+};
+
+exports.initiateUploadSession = catchAsync(async (req, res, next) => {
+  const {
+    fileName,
+    mimeType,
+    fileSize,
+    title,
+    description = '',
+    type = 'General',
+    category = 'General',
+    tags = '',
+    workspaceId = null,
+    folderId = null,
+    folderPath = '',
+    relativePath = '',
+  } = req.body;
+
+  if (!fileName || !mimeType || !fileSize) {
+    return next(new AppError('fileName, mimeType, and fileSize are required.', 400));
+  }
+
+  const fileSizeNum = Number(fileSize);
+  validateMultipartDocumentFile(fileName, mimeType, fileSizeNum);
+
+  const normalizedFolderPath = normalizePath(folderPath);
+  const normalizedRelativePath = normalizePath(relativePath) || (normalizedFolderPath ? `${normalizedFolderPath}/${fileName}` : fileName);
+  const safeFileName = normalizeStorageFileName(fileName);
+  const storageKey = `${req.user.tenantId}/documents/${Date.now()}-${safeFileName}`;
+
+  const [latestUser, tenantStorage] = await Promise.all([
+    User.findById(req.user._id).select('storageUsed storageLimit'),
+    getTenantStorageSummary(req.user.tenantId),
+  ]);
+  if (!latestUser) {
+    return next(new AppError('User not found', 404));
+  }
+
+  const projectedUsage = Number(tenantStorage.storageUsed || 0) + fileSizeNum;
+  if (projectedUsage > Number(tenantStorage.storageLimit || 0)) {
+    const availableBytes = Math.max(Number(tenantStorage.storageLimit || 0) - Number(tenantStorage.storageUsed || 0), 0);
+    return next(
+      new AppError(
+        `Enterprise storage limit reached. Available space: ${(availableBytes / (1024 * 1024)).toFixed(2)} MB. Please ask your admin to upgrade the enterprise plan.`,
+        403,
+      ),
+    );
+  }
+
+  let multipart;
+  try {
+    multipart = await createMultipartUpload(storageKey, mimeType, {
+      originalName: fileName,
+      uploadedBy: req.user._id.toString(),
+      workspaceId: workspaceId || '',
+      folderPath: normalizedFolderPath,
+      relativePath: normalizedRelativePath,
+      title: title || fileName,
+    });
+  } catch (error) {
+    return next(new AppError(`Failed to initiate upload with storage service. ${error.message || 'Please check your storage configuration.'}`, 500));
+  }
+
+  const uploadSession = new DocumentUpload({
+    tenantId: req.user.tenantId,
+    uploadedBy: req.user._id,
+    workspaceId: workspaceId || null,
+    folderId,
+    folderPath: normalizedFolderPath,
+    relativePath: normalizedRelativePath,
+    title: title || fileName,
+    description,
+    type,
+    category,
+    tags: String(tags || '').split(',').map((tag) => tag.trim()).filter(Boolean),
+    fileName,
+    originalName: fileName,
+    mimeType,
+    fileSize: fileSizeNum,
+    fileExtension: getFileExtension(fileName),
+    storageKey,
+    uploadId: multipart.UploadId,
+    uploadStatus: 'pending',
+    uploadedParts: [],
+  });
+
+  try {
+    await uploadSession.save();
+  } catch (error) {
+    try {
+      await abortMultipartUpload(storageKey, multipart.UploadId);
+    } catch (_) {
+      // Ignore cleanup errors; the upload session did not persist.
+    }
+    throw error;
+  }
+
+  return res.status(201).json({
+    status: 'success',
+    data: {
+      uploadId: uploadSession._id,
+      storageKey,
+      partSize: DOCUMENT_PART_SIZE,
+      totalParts: Math.ceil(fileSizeNum / DOCUMENT_PART_SIZE),
+    },
+  });
+});
+
+exports.getDocumentUploadPartUrl = catchAsync(async (req, res, next) => {
+  const partNum = parseInt(req.query.partNumber, 10);
+  if (!partNum || partNum < 1 || partNum > 10000) {
+    return next(new AppError('Valid partNumber (1–10000) is required.', 400));
+  }
+
+  const uploadSession = await DocumentUpload.findOne({
+    _id: req.params.id,
+    tenantId: req.user.tenantId,
+    isDeleted: false,
+  });
+
+  if (!uploadSession) {
+    return next(new AppError('Document upload not found.', 404));
+  }
+  if (!uploadSession.canUserAccess(req.user._id) && !isEnterpriseAdmin(req.user)) {
+    return next(new AppError('Not authorised.', 403));
+  }
+  if (!uploadSession.uploadId || uploadSession.uploadStatus === 'complete') {
+    return next(new AppError('Upload already completed or aborted.', 400));
+  }
+
+  const url = getUploadPartSignedUrl(uploadSession.storageKey, uploadSession.uploadId, partNum);
+  return res.status(200).json({
+    status: 'success',
+    data: { url, partNumber: partNum },
+  });
+});
+
+exports.getDocumentUploadParts = catchAsync(async (req, res, next) => {
+  const uploadSession = await DocumentUpload.findOne({
+    _id: req.params.id,
+    tenantId: req.user.tenantId,
+    isDeleted: false,
+  });
+
+  if (!uploadSession) {
+    return next(new AppError('Document upload not found.', 404));
+  }
+  if (!uploadSession.canUserAccess(req.user._id) && !isEnterpriseAdmin(req.user)) {
+    return next(new AppError('Not authorised.', 403));
+  }
+  if (!uploadSession.uploadId) {
+    return res.status(200).json({ status: 'success', data: { parts: [], uploadStatus: uploadSession.uploadStatus } });
+  }
+
+  let s3Parts = [];
+  try {
+    const result = await listParts(uploadSession.storageKey, uploadSession.uploadId);
+    s3Parts = (result.Parts || []).map((part) => ({ PartNumber: part.PartNumber, ETag: part.ETag }));
+  } catch (error) {
+    s3Parts = uploadSession.uploadedParts || [];
+  }
+
+  return res.status(200).json({
+    status: 'success',
+    data: { parts: s3Parts, uploadStatus: uploadSession.uploadStatus },
+  });
+});
+
+exports.completeDocumentUpload = catchAsync(async (req, res, next) => {
+  const { parts, title, description = '', type = 'General', category = 'General', tags = '', folderId = null, folderPath = '', relativePath = '' } = req.body;
+
+  if (!parts || !Array.isArray(parts) || parts.length === 0) {
+    return next(new AppError('parts array is required.', 400));
+  }
+
+  const uploadSession = await DocumentUpload.findOne({
+    _id: req.params.id,
+    tenantId: req.user.tenantId,
+    isDeleted: false,
+  });
+
+  if (!uploadSession) {
+    return next(new AppError('Document upload not found.', 404));
+  }
+  if (!uploadSession.canUserAccess(req.user._id) && !isEnterpriseAdmin(req.user)) {
+    return next(new AppError('Not authorised.', 403));
+  }
+  if (!uploadSession.uploadId) {
+    return next(new AppError('Upload already completed or aborted.', 400));
+  }
+
+  const sortedParts = [...parts].sort((a, b) => a.PartNumber - b.PartNumber);
+  await completeMultipartUpload(uploadSession.storageKey, uploadSession.uploadId, sortedParts);
+
+  const normalizedFolderPath = normalizePath(folderPath || uploadSession.folderPath || '');
+  const normalizedRelativePath = normalizePath(relativePath || uploadSession.relativePath || '') || (normalizedFolderPath ? `${normalizedFolderPath}/${uploadSession.originalName}` : uploadSession.originalName);
+
+  let document;
+  try {
+    document = await createDocumentFromUploadSession({
+      req,
+      session: uploadSession,
+      fileSizeBytes: uploadSession.fileSize,
+      fileKey: uploadSession.storageKey,
+      resolvedOriginalName: uploadSession.originalName,
+      normalizedFolderPath,
+      normalizedRelativePath,
+      title: title || uploadSession.title,
+      description: description || uploadSession.description || '',
+      type: type || uploadSession.type || 'General',
+      category: category || uploadSession.category || 'General',
+      tags: tags || uploadSession.tags || [],
+    });
+  } catch (error) {
+    uploadSession.uploadStatus = 'failed';
+    uploadSession.uploadId = null;
+    await uploadSession.save().catch(() => {});
+    await deleteFile(uploadSession.storageKey).catch(() => {});
+    throw error;
+  }
+
+  uploadSession.uploadStatus = 'complete';
+  uploadSession.uploadId = null;
+  uploadSession.uploadedParts = sortedParts;
+  uploadSession.documentId = document._id;
+  uploadSession.completedAt = new Date();
+  await uploadSession.save();
+
+  return res.status(200).json({
+    status: 'success',
+    data: { document },
+  });
+});
+
+exports.abortDocumentUpload = catchAsync(async (req, res, next) => {
+  const uploadSession = await DocumentUpload.findOne({
+    _id: req.params.id,
+    tenantId: req.user.tenantId,
+    isDeleted: false,
+  });
+
+  if (!uploadSession) {
+    return next(new AppError('Document upload not found.', 404));
+  }
+  if (!uploadSession.canUserAccess(req.user._id) && !isEnterpriseAdmin(req.user)) {
+    return next(new AppError('Not authorised.', 403));
+  }
+
+  if (uploadSession.uploadId) {
+    try {
+      await abortMultipartUpload(uploadSession.storageKey, uploadSession.uploadId);
+    } catch (error) {
+      // Ignore cleanup errors: the upload may already have been removed by Wasabi.
+    }
+  }
+
+  uploadSession.uploadStatus = 'aborted';
+  uploadSession.uploadId = null;
+  uploadSession.isDeleted = true;
+  uploadSession.deletedAt = new Date();
+  uploadSession.deletedBy = req.user._id;
+  await uploadSession.save();
+
+  return res.status(200).json({ status: 'success', message: 'Upload aborted.' });
+});
 
 /**
  * Upload document
