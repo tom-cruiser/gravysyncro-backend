@@ -18,6 +18,7 @@ router.get('/statistics', userController.getUserStats);
 // Subscription / storage plan (self-service, affects the whole tenant)
 router.get('/subscription-plans', userController.getSubscriptionPlans);
 router.patch('/subscription-plan', userController.updateSubscriptionPlan);
+router.get('/subscription-plan/request', userController.getPendingPlanRequest);
 
 // Search users
 router.get('/search', userController.searchUsers);

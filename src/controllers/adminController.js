@@ -2,10 +2,13 @@ const User = require('../models/User');
 const Document = require('../models/Document');
 const ActivityLog = require('../models/ActivityLog');
 const Notification = require('../models/Notification');
+const PlanChangeRequest = require('../models/PlanChangeRequest');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const { STORAGE_PLAN_GB_OPTIONS, findPlanById, gbToBytes } = require('../utils/storagePlans');
 const { getTenantStorageMap, getTenantStorageSummary, applyTenantStoragePlan } = require('../utils/tenantStorage');
+const { createInvoiceForTenant } = require('../utils/invoices');
+const { createNotification } = require('./notificationController');
 const { emitTenantEvent } = require('../config/socket');
 
 /**
@@ -996,5 +999,166 @@ exports.updateUserSubscriptionAccess = catchAsync(async (req, res, next) => {
         trialExpiresAt: user.trialExpiresAt,
       },
     },
+  });
+});
+
+/**
+ * GET /admin/plan-requests
+ * Self-service storage-plan switches (Billing.jsx) open one of these
+ * instead of applying immediately — see userController.updateSubscriptionPlan.
+ * Defaults to pending only; pass ?status=all|approved|rejected for history.
+ */
+exports.listPlanRequests = catchAsync(async (req, res) => {
+  const { status = 'pending' } = req.query;
+  const filter = status === 'all' ? {} : { status };
+
+  const requests = await PlanChangeRequest.find(filter)
+    .sort({ createdAt: -1 })
+    .populate('requestedBy', 'firstName lastName email tenantId')
+    .populate('reviewedBy', 'firstName lastName email');
+
+  res.status(200).json({
+    status: 'success',
+    results: requests.length,
+    data: { requests },
+  });
+});
+
+/**
+ * PATCH /admin/plan-requests/:id/approve
+ * Applies the requested plan to the tenant and bills it right away — the
+ * same two steps userController.updateSubscriptionPlan used to do
+ * immediately before self-service switches required approval.
+ */
+exports.approvePlanRequest = catchAsync(async (req, res, next) => {
+  const request = await PlanChangeRequest.findById(req.params.id)
+    .populate('requestedBy', 'firstName lastName email');
+
+  if (!request) {
+    return next(new AppError('Plan change request not found', 404));
+  }
+  if (request.status !== 'pending') {
+    return next(new AppError(`This request was already ${request.status}.`, 400));
+  }
+
+  const storageLimit = await applyTenantStoragePlan(request.tenantId, request.requestedPlanGb);
+  const invoice = await createInvoiceForTenant(request.tenantId, { generatedBy: 'plan_change' });
+  const tenantStorage = await getTenantStorageSummary(request.tenantId);
+
+  request.status = 'approved';
+  request.reviewedBy = req.user._id;
+  request.reviewedAt = new Date();
+  await request.save();
+
+  await ActivityLog.create({
+    tenantId: request.tenantId,
+    user: req.user._id,
+    action: 'settings_change',
+    resourceType: 'tenant',
+    details: {
+      action: 'plan_change_request_approved',
+      tenantId: request.tenantId,
+      requestId: request._id,
+      newPlanGb: request.requestedPlanGb,
+      invoiceNumber: invoice.invoiceNumber,
+      approvedBy: req.user.email,
+    },
+    ipAddress: req.ip,
+    userAgent: req.get('user-agent'),
+    status: 'success',
+  });
+
+  emitTenantEvent(request.tenantId, 'tenant:storage-updated', {
+    tenantId: request.tenantId,
+    storagePlanGb: request.requestedPlanGb,
+    storageLimit,
+    storageUsed: tenantStorage.storageUsed,
+    storageUsedPercentage: tenantStorage.storageUsedPercentage,
+    updatedAt: new Date().toISOString(),
+  });
+  emitTenantEvent(request.tenantId, 'tenant:plan-request-resolved', {
+    requestId: request._id,
+    status: 'approved',
+  });
+
+  if (request.requestedBy) {
+    await createNotification({
+      tenantId: request.tenantId,
+      user: request.requestedBy._id,
+      type: 'plan_change_approved',
+      title: 'Plan change approved',
+      message: `Your request to switch to the ${request.requestedPlanName} plan was approved. `
+        + `Invoice ${invoice.invoiceNumber} is now in your billing history.`,
+      actionUrl: '/billing/invoices',
+    });
+  }
+
+  res.status(200).json({
+    status: 'success',
+    message: `Approved — tenant switched to ${request.requestedPlanName}.`,
+    data: { request, invoice },
+  });
+});
+
+/**
+ * PATCH /admin/plan-requests/:id/reject
+ */
+exports.rejectPlanRequest = catchAsync(async (req, res, next) => {
+  const { reason } = req.body;
+  const request = await PlanChangeRequest.findById(req.params.id)
+    .populate('requestedBy', 'firstName lastName email');
+
+  if (!request) {
+    return next(new AppError('Plan change request not found', 404));
+  }
+  if (request.status !== 'pending') {
+    return next(new AppError(`This request was already ${request.status}.`, 400));
+  }
+
+  request.status = 'rejected';
+  request.reviewedBy = req.user._id;
+  request.reviewedAt = new Date();
+  request.reviewNote = reason || '';
+  await request.save();
+
+  await ActivityLog.create({
+    tenantId: request.tenantId,
+    user: req.user._id,
+    action: 'settings_change',
+    resourceType: 'tenant',
+    details: {
+      action: 'plan_change_request_rejected',
+      tenantId: request.tenantId,
+      requestId: request._id,
+      requestedPlanGb: request.requestedPlanGb,
+      reason: reason || '',
+      rejectedBy: req.user.email,
+    },
+    ipAddress: req.ip,
+    userAgent: req.get('user-agent'),
+    status: 'success',
+  });
+
+  emitTenantEvent(request.tenantId, 'tenant:plan-request-resolved', {
+    requestId: request._id,
+    status: 'rejected',
+  });
+
+  if (request.requestedBy) {
+    await createNotification({
+      tenantId: request.tenantId,
+      user: request.requestedBy._id,
+      type: 'plan_change_rejected',
+      title: 'Plan change declined',
+      message: `Your request to switch to the ${request.requestedPlanName} plan was declined`
+        + `${reason ? `: ${reason}` : '.'}`,
+      actionUrl: '/billing',
+    });
+  }
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Request rejected.',
+    data: { request },
   });
 });

@@ -27,6 +27,11 @@ router.delete('/users/:userId', adminController.deleteUser);
 // Tenant Management
 router.get('/tenants', adminController.getAllTenants);
 
+// Plan change requests (self-service switches from Billing.jsx awaiting approval)
+router.get('/plan-requests', adminController.listPlanRequests);
+router.patch('/plan-requests/:id/approve', adminController.approvePlanRequest);
+router.patch('/plan-requests/:id/reject', adminController.rejectPlanRequest);
+
 // Activity Monitoring
 router.get('/activities', adminController.getActivityLogs);
 
