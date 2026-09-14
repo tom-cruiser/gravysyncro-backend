@@ -23,9 +23,19 @@ const findPlanByStorageGb = (storageGb, billingCycle = 'monthly') => (
 // "INV-ACME-000001". Not strictly race-condition-proof under concurrent
 // generation for the same tenant, but invoices are only ever created by
 // one cron pass or one manual click at a time in practice.
+//
+// Every self-registered tenantId is literally `tenant_<uuid>` (see
+// authController.js), so stripping only non-alphanumeric characters left
+// every tenant with the same "TENA" prefix — meaning every tenant's very
+// first invoice number collided on "INV-TENA-000001". Combined with the
+// (now-fixed) globally-unique index on invoiceNumber, the second tenant
+// ever billed always failed with a duplicate-key error. Drop the leading
+// "tenant" word first so the prefix actually comes from the unique part
+// of the id.
 const generateInvoiceNumber = async (tenantId) => {
   const count = await Invoice.countDocuments({ tenantId });
   const tenantPrefix = String(tenantId)
+    .replace(/^tenant[_-]?/i, '')
     .replace(/[^a-zA-Z0-9]/g, '')
     .slice(0, 4)
     .toUpperCase()

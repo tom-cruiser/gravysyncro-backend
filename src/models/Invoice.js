@@ -25,10 +25,16 @@ const invoiceSchema = new mongoose.Schema({
     required: true,
     index: true,
   },
+  // Unique per tenant, not globally — see generateInvoiceNumber in
+  // utils/invoices.js. Every self-registered tenantId is `tenant_<uuid>`,
+  // so a bare global-unique index here would make the SECOND tenant ever
+  // billed collide with the first tenant's "INV-XXXX-000001" and fail
+  // with a duplicate-key error (this actually happened: it's why the
+  // monthly cron and the plan-change-request approval flow were both
+  // silently failing with a 500).
   invoiceNumber: {
     type: String,
     required: true,
-    unique: true,
   },
 
   // There is no real payment gateway wired up yet (see utils/invoices.js),
@@ -81,5 +87,6 @@ const invoiceSchema = new mongoose.Schema({
 
 invoiceSchema.index({ tenantId: 1, issuedAt: -1 });
 invoiceSchema.index({ tenantId: 1, periodStart: 1 });
+invoiceSchema.index({ tenantId: 1, invoiceNumber: 1 }, { unique: true });
 
 module.exports = mongoose.model('Invoice', invoiceSchema);
