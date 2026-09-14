@@ -6,6 +6,7 @@ const { log } = require('../middleware/activityLogger');
 const { getTenantStorageSummary, applyTenantStoragePlan } = require('../utils/tenantStorage');
 const { STORAGE_PLANS } = require('../utils/storagePlans');
 const { emitTenantEvent } = require('../config/socket');
+const { createInvoiceForTenant } = require('../utils/invoices');
 
 /**
  * Get current user profile
@@ -432,6 +433,16 @@ exports.updateSubscriptionPlan = catchAsync(async (req, res, next) => {
   const storageLimit = await applyTenantStoragePlan(tenantId, normalizedPlan);
   const tenantStorage = await getTenantStorageSummary(tenantId);
 
+  // Self-service plan switches take effect immediately (see the note above
+  // on this endpoint), so — unlike the monthly cron in jobs/invoiceBiller.js,
+  // which only bills once a calendar month — record an invoice for this
+  // change right now. Without this, a member paying for e.g. the Pro plan
+  // had no receipt for it until the next monthly cron pass happened to run,
+  // and that pass would have skipped them anyway once *any* invoice existed
+  // for the month (it only checks tenantId + periodStart), silently under-
+  // billing anyone who upgraded after the first invoice went out.
+  const invoice = await createInvoiceForTenant(tenantId, { generatedBy: 'plan_change' });
+
   await log(req, 'settings_change', 'tenant', null, {
     action: 'subscription_plan_updated',
     tenantId,
@@ -439,6 +450,7 @@ exports.updateSubscriptionPlan = catchAsync(async (req, res, next) => {
     newPlanGb: normalizedPlan,
     updatedBy: req.user.email,
     selfService: true,
+    invoiceNumber: invoice.invoiceNumber,
   });
 
   emitTenantEvent(tenantId, 'tenant:storage-updated', {
@@ -460,6 +472,12 @@ exports.updateSubscriptionPlan = catchAsync(async (req, res, next) => {
         storageUsed: tenantStorage.storageUsed,
         storageLimit,
         storageUsedPercentage: tenantStorage.storageUsedPercentage,
+      },
+      invoice: {
+        _id: invoice._id,
+        invoiceNumber: invoice.invoiceNumber,
+        totalCents: invoice.totalCents,
+        currency: invoice.currency,
       },
     },
   });
