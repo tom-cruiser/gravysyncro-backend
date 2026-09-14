@@ -9,6 +9,7 @@ const { STORAGE_PLAN_GB_OPTIONS, findPlanById, gbToBytes } = require('../utils/s
 const { getTenantStorageMap, getTenantStorageSummary, applyTenantStoragePlan } = require('../utils/tenantStorage');
 const { createInvoiceForTenant } = require('../utils/invoices');
 const { createNotification } = require('./notificationController');
+const { sendSlackMessage } = require('../services/slackService');
 const { emitTenantEvent } = require('../config/socket');
 
 /**
@@ -1091,6 +1092,20 @@ exports.approvePlanRequest = catchAsync(async (req, res, next) => {
         + `Invoice ${invoice.invoiceNumber} is now in your billing history.`,
       actionUrl: '/billing/invoices',
     });
+
+    // Fire-and-forget, same as the original request alert in
+    // userController.updateSubscriptionPlan — keeps the whole
+    // request → approve/reject lifecycle visible in Slack, not just
+    // the opening step.
+    sendSlackMessage(
+      [
+        ':white_check_mark: *Plan change approved*',
+        `*Organization:* ${request.requestedBy.firstName} ${request.requestedBy.lastName} (${request.requestedBy.email})`,
+        `*Plan:* ${request.currentPlanGb} GB → ${request.requestedPlanName} (${request.requestedPlanGb} GB)`,
+        `*Approved by:* ${req.user.firstName} ${req.user.lastName}`,
+        `*Invoice:* ${invoice.invoiceNumber} (${(invoice.totalCents / 100).toFixed(2)} ${invoice.currency})`,
+      ].join('\n')
+    );
   }
 
   res.status(200).json({
@@ -1154,6 +1169,16 @@ exports.rejectPlanRequest = catchAsync(async (req, res, next) => {
         + `${reason ? `: ${reason}` : '.'}`,
       actionUrl: '/billing',
     });
+
+    sendSlackMessage(
+      [
+        ':x: *Plan change rejected*',
+        `*Organization:* ${request.requestedBy.firstName} ${request.requestedBy.lastName} (${request.requestedBy.email})`,
+        `*Plan:* ${request.currentPlanGb} GB → ${request.requestedPlanName} (${request.requestedPlanGb} GB)`,
+        `*Rejected by:* ${req.user.firstName} ${req.user.lastName}`,
+        ...(reason ? [`*Reason:* ${reason}`] : []),
+      ].join('\n')
+    );
   }
 
   res.status(200).json({
