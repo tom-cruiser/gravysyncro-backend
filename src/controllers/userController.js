@@ -480,9 +480,14 @@ exports.updateSubscriptionPlan = catchAsync(async (req, res, next) => {
     relatedUser: req.user._id,
   })));
 
+  // <!channel> makes Slack treat this as a mention, which is what actually
+  // triggers a mobile push — a plain text post (what this looked like
+  // before) shows up in the channel but stays silent on phones unless the
+  // viewer has that channel's notification preference set to "All new
+  // messages" instead of Slack's own default of "Mentions only".
   sendSlackMessage(
     [
-      ':page_facing_up: *New plan change request*',
+      '<!channel> :page_facing_up: *New plan change request*',
       `*From:* ${req.user.firstName} ${req.user.lastName} (${req.user.email})`,
       `*Plan:* ${tenantStorage.storagePlanGb || 50} GB → ${monthlyPlan.name} (${monthlyPlan.storageGb} GB)`,
     ].join('\n')

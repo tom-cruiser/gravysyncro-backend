@@ -1099,7 +1099,7 @@ exports.approvePlanRequest = catchAsync(async (req, res, next) => {
     // the opening step.
     sendSlackMessage(
       [
-        ':white_check_mark: *Plan change approved*',
+        '<!channel> :white_check_mark: *Plan change approved*',
         `*Organization:* ${request.requestedBy.firstName} ${request.requestedBy.lastName} (${request.requestedBy.email})`,
         `*Plan:* ${request.currentPlanGb} GB → ${request.requestedPlanName} (${request.requestedPlanGb} GB)`,
         `*Approved by:* ${req.user.firstName} ${req.user.lastName}`,
@@ -1172,7 +1172,7 @@ exports.rejectPlanRequest = catchAsync(async (req, res, next) => {
 
     sendSlackMessage(
       [
-        ':x: *Plan change rejected*',
+        '<!channel> :x: *Plan change rejected*',
         `*Organization:* ${request.requestedBy.firstName} ${request.requestedBy.lastName} (${request.requestedBy.email})`,
         `*Plan:* ${request.currentPlanGb} GB → ${request.requestedPlanName} (${request.requestedPlanGb} GB)`,
         `*Rejected by:* ${req.user.firstName} ${req.user.lastName}`,
