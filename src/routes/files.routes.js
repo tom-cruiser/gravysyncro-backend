@@ -3,7 +3,7 @@ const fileController = require('../controllers/fileController');
 const { protect } = require('../middleware/auth');
 const { requireActiveSubscription } = require('../middleware/subscriptionAccess');
 const { uploadPlusFiles, handleMulterError } = require('../middleware/upload');
-const { uploadLimiter } = require('../middleware/rateLimiter');
+const { filesUploadLimiter } = require('../middleware/rateLimiter');
 
 const router = express.Router();
 
@@ -18,7 +18,7 @@ router
   .get(fileController.listFiles)
   .delete(fileController.bulkDeleteFiles);
 
-router.post('/upload', uploadLimiter, uploadPlusFiles, handleMulterError, fileController.uploadFiles);
+router.post('/upload', filesUploadLimiter, uploadPlusFiles, handleMulterError, fileController.uploadFiles);
 
 router.get('/:id/download', fileController.downloadFile);
 router.delete('/:id', fileController.deleteFile);

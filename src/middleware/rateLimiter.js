@@ -51,6 +51,24 @@ exports.uploadLimiter = rateLimit({
   },
 });
 
+// Plus file vault upload limiter — deliberately its own bucket, NOT shared
+// with uploadLimiter above. The vault uploads one request per file (see
+// uploadManager.js) with no cap on file/folder count, so a single large
+// folder can itself be tens of thousands of requests; sharing a budget
+// with Document uploads meant one big vault batch (or a couple of retried
+// ones) could eat the whole hourly allowance and start silently 429ing
+// unrelated Document uploads, or vice versa — this showed up as files
+// scattered through a big batch failing for no reason tied to their size.
+exports.filesUploadLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: parseInt(process.env.FILES_UPLOAD_LIMIT_MAX_REQUESTS) || 100000,
+  skip: () => isLimiterDisabled('ENABLE_FILES_UPLOAD_RATE_LIMITING'),
+  message: 'Too many file uploads, please try again later.',
+  handler: (req, res, next) => {
+    next(new AppError('Upload limit exceeded. Please try again later.', 429));
+  },
+});
+
 // Password reset limiter
 exports.passwordResetLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
