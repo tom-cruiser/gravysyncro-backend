@@ -117,18 +117,19 @@ Key variables:
 - `PATCH /api/v1/notifications/mark-all-read` - Mark all as read
 - `DELETE /api/v1/notifications/:notificationId` - Delete notification
 
-### Files (Plus vault)
-Requires authentication and `req.user.isPlus === true` (see [Plus File Vault](#plus-file-vault) below).
-- `GET /api/v1/files` - List the authenticated user's files
+### Files (File Vault)
+Requires authentication and an active subscription/trial — same gate as Documents, Audio and Video (see [File Vault](#file-vault) below).
+- `GET /api/v1/files` - List the authenticated user's files (`?search=` filters by filename/folder path)
 - `POST /api/v1/files/upload` - Upload one or more files (`multipart/form-data`, field name `files`) — any file type, no MIME/extension restriction
 - `GET /api/v1/files/:id/download` - Download a file, byte-for-byte identical to what was uploaded
 - `DELETE /api/v1/files/:id` - Delete a file (removes the Mongo record and the file on disk)
+- `DELETE /api/v1/files` - Bulk delete (`{ "ids": [...] }` in the body, max 5000 per request)
 
-## Plus File Vault
+## File Vault
 
 An additive feature, separate from the Document archiving pipeline above (which keeps its own MIME whitelist, image re-encoding, and Wasabi storage — those are unrelated and untouched by this feature).
 
-**Upload flow**: `protect` (JWT auth) → `requirePlus` (`req.user.isPlus`) → multer with **no `fileFilter`**, writing straight to `uploads/user_{userId}/{uuid}{originalExtension}` on local disk (`middleware/upload.js` → `uploadPlusFiles`, `controllers/fileController.js`). A `File` document (`models/File.js`) records `userId`, `storedPath`, `originalName`, `mimeType`, `size`, `uploadedAt` for each uploaded file, indexed on `{ userId, uploadedAt }`.
+**Upload flow**: `protect` (JWT auth) → `requireActiveSubscription` (same gate as Documents/Audio/Video — no separate plan) → multer with **no `fileFilter`**, writing straight to `uploads/user_{userId}/{uuid}{originalExtension}` on local disk (`middleware/upload.js` → `uploadPlusFiles`, `controllers/fileController.js`). A `File` document (`models/File.js`) records `userId`, `storedPath`, `originalName`, `mimeType`, `size`, `uploadedAt` for each uploaded file, indexed on `{ userId, uploadedAt }`.
 
 **Integrity guarantee**: uploaded bytes are never parsed, re-encoded, or read as text anywhere in this path. Download streams the file straight off disk with `Content-Type`/`Content-Length` taken from the stored metadata and `Content-Disposition` built from the stored `originalName`, so what comes back is byte-for-byte identical to what was uploaded — verified by `tests/fileIntegrity.test.js` (SHA-256 round-trip). Note the app's global `compression()` middleware would otherwise gzip large downloads and drop the `Content-Length` header it can no longer guarantee; the download route opts out via `res.locals.skipCompression` (see `app.js`).
 
@@ -142,7 +143,9 @@ An additive feature, separate from the Document archiving pipeline above (which 
 
 **Folder uploads**: both drag-and-drop of a folder and the vault's "Select a folder" button (a `webkitdirectory` file input) are supported. The folder-relative path is captured client-side and sent as `relativePath` (or `relativePaths`, a JSON array, for batched requests) alongside the upload; `models/File.js` stores it separately from `originalName`. It's display-only — storage and download always key off `storedPath`/`_id`, and the saved/downloaded filename is always the plain `originalName`, not the full path.
 
-**Plus gating**: `User.isPlus` (`models/User.js`) is a plain boolean, independent of the existing trial/subscription (`isSubscriptionActive`) and storage-plan (`storagePlanGb`) gates. `middleware/planAccess.js`'s `requirePlus` returns `402` when it's not set. There's no self-serve upgrade flow yet — an admin sets it directly on the user document. The frontend gates the `/plus-files` page and sidebar entry the same way (`user.isPlus` from the auth slice) and shows an upgrade CTA otherwise.
+**Access**: available to any authenticated user with an active subscription/trial — no separate plan or upgrade flow. Previously gated behind a `User.isPlus` flag; that field, its middleware (`middleware/planAccess.js`), and the frontend's upgrade-CTA gate have been removed so the vault is open the same way Documents/Audio/Video already are.
+
+**Bulk delete**: the "My Documents" list (`PlusFiles.jsx`) supports selecting files via checkboxes (including "select all") and deleting them in one request via `DELETE /api/v1/files`. Ownership-scoped and lenient — an id that isn't the caller's file, doesn't exist, or is already gone is skipped rather than failing the whole batch.
 
 ## Project Structure
 

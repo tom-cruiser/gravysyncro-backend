@@ -1,15 +1,17 @@
 const express = require('express');
 const fileController = require('../controllers/fileController');
 const { protect } = require('../middleware/auth');
-const { requirePlus } = require('../middleware/planAccess');
+const { requireActiveSubscription } = require('../middleware/subscriptionAccess');
 const { uploadPlusFiles, handleMulterError } = require('../middleware/upload');
 const { uploadLimiter } = require('../middleware/rateLimiter');
 
 const router = express.Router();
 
-// All routes require authentication and an active Plus plan.
+// All routes require authentication. Gated the same way as Documents,
+// Audio and Video (protect -> requireActiveSubscription) — any user with
+// an active account/trial gets the file vault, no separate plan needed.
 router.use(protect);
-router.use(requirePlus);
+router.use(requireActiveSubscription);
 
 router
   .route('/')
