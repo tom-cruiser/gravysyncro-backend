@@ -1,4 +1,5 @@
 const AppError = require('../utils/appError');
+const { isEnterpriseAdmin } = require('../utils/workspaceAccess');
 
 /**
  * Gates the Plus file vault (routes/files.routes.js) behind the user's
@@ -11,6 +12,15 @@ const AppError = require('../utils/appError');
 exports.requirePlus = (req, res, next) => {
   if (!req.user) {
     return next(new AppError('You are not logged in. Please log in to access this resource.', 401));
+  }
+
+  // Every other paywall/ownership gate in this codebase exempts Enterprise
+  // Admins (see subscriptionAccess.js, workspaceAccess.js, and the
+  // ownership checks in documentController/audioController/videoController)
+  // so an admin is never locked out of a tenant's data. Plus follows the
+  // same rule rather than being the one gate that can strand an admin.
+  if (isEnterpriseAdmin(req.user)) {
+    return next();
   }
 
   if (!req.user.isPlus) {
