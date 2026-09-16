@@ -105,6 +105,37 @@ const audioUpload = multer({
 
 exports.uploadAudioSingle = audioUpload.single('file');
 
+// Plus file vault (routes/files.routes.js): unrestricted, any-file-type
+// storage. Deliberately has NO fileFilter and no post-processing anywhere
+// in its path — the whole point of this endpoint is that whatever bytes
+// come in are the exact bytes stored and later served back. Files live on
+// local disk under uploads/user_{userId}/, one directory per user, rather
+// than Wasabi — this is a separate, additive feature from the Document
+// archiving pipeline (see fileController.js) and doesn't share its storage.
+const plusUploadsRoot = path.join(__dirname, '..', '..', 'uploads');
+
+const plusFileStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const userDir = path.join(plusUploadsRoot, `user_${req.user._id}`);
+    fs.mkdirSync(userDir, { recursive: true });
+    cb(null, userDir);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '');
+    cb(null, `${crypto.randomUUID()}${ext}`);
+  },
+});
+
+const plusFileUpload = multer({
+  storage: plusFileStorage,
+  limits: {
+    fileSize: parseInt(process.env.PLUS_MAX_FILE_SIZE, 10) || 104857600, // 100MB default per file
+    files: parseInt(process.env.PLUS_MAX_FILES_PER_UPLOAD, 10) || 50,
+  },
+});
+
+exports.uploadPlusFiles = plusFileUpload.array('files', parseInt(process.env.PLUS_MAX_FILES_PER_UPLOAD, 10) || 50);
+
 // Error handler for multer errors
 exports.handleMulterError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {

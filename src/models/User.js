@@ -226,6 +226,16 @@ const userSchema = new mongoose.Schema(
       enum: ['trial', 'active', 'locked', 'admin-approved'],
       default: 'trial',
     },
+
+    // Plus plan: unlocks the unrestricted multi-file vault (see
+    // middleware/planAccess.js requirePlus, routes/files.routes.js) that
+    // lets a user upload any file type and later re-download it byte-for-byte
+    // identical. Independent of the storage-plan / trial-subscription gates
+    // above — a user can be a subscriber without being Plus.
+    isPlus: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     timestamps: true,

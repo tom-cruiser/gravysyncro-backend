@@ -25,6 +25,7 @@ const audioRoutes = require("./routes/audio.routes");
 const workspaceRoutes = require("./routes/workspace.routes");
 const assetRoutes = require("./routes/asset.routes");
 const billingRoutes = require("./routes/billing.routes");
+const filesRoutes = require("./routes/files.routes");
 
 // Create Express app
 const app = express();
@@ -70,7 +71,13 @@ app.use(
 );
 
 // Compression middleware
-app.use(compression());
+app.use(compression({
+  // Escape hatch for routes that must not have their response body
+  // re-encoded or their Content-Length header dropped (e.g. the Plus file
+  // vault's byte-for-byte download — see fileController.downloadFile).
+  // Falls back to compression's own default filter for everything else.
+  filter: (req, res) => (res.locals.skipCompression ? false : compression.filter(req, res)),
+}));
 
 // HTTP request logger (development only)
 if (process.env.NODE_ENV === "development") {
@@ -120,6 +127,7 @@ app.use("/api/v1/audios", audioRoutes);
 app.use("/api/v1/workspaces", workspaceRoutes);
 app.use("/api/v1/assets", assetRoutes);
 app.use("/api/v1/billing", billingRoutes);
+app.use("/api/v1/files", filesRoutes);
 
 // Handle undefined routes
 app.all("*", (req, res, next) => {

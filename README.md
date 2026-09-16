@@ -117,6 +117,29 @@ Key variables:
 - `PATCH /api/v1/notifications/mark-all-read` - Mark all as read
 - `DELETE /api/v1/notifications/:notificationId` - Delete notification
 
+### Files (Plus vault)
+Requires authentication and `req.user.isPlus === true` (see [Plus File Vault](#plus-file-vault) below).
+- `GET /api/v1/files` - List the authenticated user's files
+- `POST /api/v1/files/upload` - Upload one or more files (`multipart/form-data`, field name `files`) — any file type, no MIME/extension restriction
+- `GET /api/v1/files/:id/download` - Download a file, byte-for-byte identical to what was uploaded
+- `DELETE /api/v1/files/:id` - Delete a file (removes the Mongo record and the file on disk)
+
+## Plus File Vault
+
+An additive feature, separate from the Document archiving pipeline above (which keeps its own MIME whitelist, image re-encoding, and Wasabi storage — those are unrelated and untouched by this feature).
+
+**Upload flow**: `protect` (JWT auth) → `requirePlus` (`req.user.isPlus`) → multer with **no `fileFilter`**, writing straight to `uploads/user_{userId}/{uuid}{originalExtension}` on local disk (`middleware/upload.js` → `uploadPlusFiles`, `controllers/fileController.js`). A `File` document (`models/File.js`) records `userId`, `storedPath`, `originalName`, `mimeType`, `size`, `uploadedAt` for each uploaded file, indexed on `{ userId, uploadedAt }`.
+
+**Integrity guarantee**: uploaded bytes are never parsed, re-encoded, or read as text anywhere in this path. Download streams the file straight off disk with `Content-Type`/`Content-Length` taken from the stored metadata and `Content-Disposition` built from the stored `originalName`, so what comes back is byte-for-byte identical to what was uploaded — verified by `tests/fileIntegrity.test.js` (SHA-256 round-trip). Note the app's global `compression()` middleware would otherwise gzip large downloads and drop the `Content-Length` header it can no longer guarantee; the download route opts out via `res.locals.skipCompression` (see `app.js`).
+
+**Server limits** (all configurable via env, see `.env.example`):
+- `PLUS_MAX_FILE_SIZE` — max bytes per file (default `104857600`, 100MB)
+- `PLUS_MAX_FILES_PER_UPLOAD` — max files per upload request (default `50`)
+- `express.json()`/`express.urlencoded()` limits in `app.js` (currently 500MB) don't apply to multipart file bodies, which multer streams directly to disk — only the two vars above bound file size
+- If this app sits behind a reverse proxy (e.g. Nginx), its body-size limit must also be raised to match, e.g. `client_max_body_size 100m;` — otherwise the proxy rejects large uploads before they reach Node
+
+**Plus gating**: `User.isPlus` (`models/User.js`) is a plain boolean, independent of the existing trial/subscription (`isSubscriptionActive`) and storage-plan (`storagePlanGb`) gates. `middleware/planAccess.js`'s `requirePlus` returns `402` when it's not set. There's no self-serve upgrade flow yet — an admin sets it directly on the user document. The frontend gates the `/plus-files` page and sidebar entry the same way (`user.isPlus` from the auth slice) and shows an upgrade CTA otherwise.
+
 ## Project Structure
 
 ```
