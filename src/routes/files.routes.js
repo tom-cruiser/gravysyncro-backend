@@ -13,7 +13,8 @@ router.use(requirePlus);
 
 router
   .route('/')
-  .get(fileController.listFiles);
+  .get(fileController.listFiles)
+  .delete(fileController.bulkDeleteFiles);
 
 router.post('/upload', uploadLimiter, uploadPlusFiles, handleMulterError, fileController.uploadFiles);
 

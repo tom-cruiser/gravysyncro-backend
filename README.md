@@ -133,10 +133,14 @@ An additive feature, separate from the Document archiving pipeline above (which 
 **Integrity guarantee**: uploaded bytes are never parsed, re-encoded, or read as text anywhere in this path. Download streams the file straight off disk with `Content-Type`/`Content-Length` taken from the stored metadata and `Content-Disposition` built from the stored `originalName`, so what comes back is byte-for-byte identical to what was uploaded — verified by `tests/fileIntegrity.test.js` (SHA-256 round-trip). Note the app's global `compression()` middleware would otherwise gzip large downloads and drop the `Content-Length` header it can no longer guarantee; the download route opts out via `res.locals.skipCompression` (see `app.js`).
 
 **Server limits** (all configurable via env, see `.env.example`):
-- `PLUS_MAX_FILE_SIZE` — max bytes per file (default `104857600`, 100MB)
-- `PLUS_MAX_FILES_PER_UPLOAD` — max files per upload request (default `50`)
+- `PLUS_MAX_FILE_SIZE` — max bytes per file (default `524288000`, 500MB)
+- `PLUS_MAX_FILES_PER_UPLOAD` — max files per upload request (default `50`; the frontend uploads one file per request regardless, so this doesn't cap how many files a batch/folder upload can contain — see below)
 - `express.json()`/`express.urlencoded()` limits in `app.js` (currently 500MB) don't apply to multipart file bodies, which multer streams directly to disk — only the two vars above bound file size
-- If this app sits behind a reverse proxy (e.g. Nginx), its body-size limit must also be raised to match, e.g. `client_max_body_size 100m;` — otherwise the proxy rejects large uploads before they reach Node
+- If this app sits behind a reverse proxy (e.g. Nginx), its body-size limit must also be raised to match, e.g. `client_max_body_size 500m;` — otherwise the proxy rejects large uploads before they reach Node
+
+**File/folder count**: no limit. The frontend (`PlusFiles.jsx`) sets no `maxFiles` on the dropzone and uploads each file as its own request (for per-file progress/retry), so `PLUS_MAX_FILES_PER_UPLOAD` above never comes into play — a folder with thousands of files queues and uploads them all, three at a time (`CONCURRENCY` in `PlusFiles.jsx`). The only real ceiling is `uploadLimiter`'s shared rate limit (`middleware/rateLimiter.js`, `UPLOAD_LIMIT_MAX_REQUESTS`, default 20,000 requests/hour — same limiter the Document upload feature uses).
+
+**Folder uploads**: both drag-and-drop of a folder and the vault's "Select a folder" button (a `webkitdirectory` file input) are supported. The folder-relative path is captured client-side and sent as `relativePath` (or `relativePaths`, a JSON array, for batched requests) alongside the upload; `models/File.js` stores it separately from `originalName`. It's display-only — storage and download always key off `storedPath`/`_id`, and the saved/downloaded filename is always the plain `originalName`, not the full path.
 
 **Plus gating**: `User.isPlus` (`models/User.js`) is a plain boolean, independent of the existing trial/subscription (`isSubscriptionActive`) and storage-plan (`storagePlanGb`) gates. `middleware/planAccess.js`'s `requirePlus` returns `402` when it's not set. There's no self-serve upgrade flow yet — an admin sets it directly on the user document. The frontend gates the `/plus-files` page and sidebar entry the same way (`user.isPlus` from the auth slice) and shows an upgrade CTA otherwise.
 

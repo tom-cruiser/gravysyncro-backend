@@ -20,6 +20,15 @@ const fileSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  // Folder path relative to whatever the user dropped/selected, e.g.
+  // "invoices/2024/march.pdf" for a file picked up while uploading a whole
+  // folder, or just the bare filename when there was no folder involved.
+  // Display-only — storage/lookup always go through storedPath/_id, so this
+  // never touches the filesystem and can't be used for traversal.
+  relativePath: {
+    type: String,
+    default: null,
+  },
   mimeType: {
     type: String,
     default: 'application/octet-stream',
