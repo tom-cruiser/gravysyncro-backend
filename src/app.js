@@ -94,6 +94,16 @@ if (process.env.NODE_ENV === "production" && rateLimitingEnabled) {
         req.path === '/v1/documents'
         || req.path.startsWith('/v1/documents/uploads')
         || req.path.startsWith('/v1/audios')
+        // File Vault (see routes/files.routes.js) also uploads one request
+        // per file with no batching — a big folder is as many requests as
+        // Documents, so it needs the same exemption from the general
+        // 100-requests/15-min apiLimiter. It already has its own dedicated
+        // filesUploadLimiter (100,000/hour) applied on the route itself;
+        // without this exemption, the *general* limiter was cutting bulk
+        // vault uploads off partway through — whichever files' requests
+        // happened to land after the 100th in the 15-minute window got
+        // silently 429'd, regardless of their size.
+        || req.path === '/v1/files/upload'
       );
 
     if (isHighVolumeUpload) {
