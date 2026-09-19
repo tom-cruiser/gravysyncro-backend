@@ -12,9 +12,15 @@ const fileSchema = new mongoose.Schema({
     required: true,
     index: true,
   },
+  // Wasabi object key (files/user_{id}/{uuid}{ext}). Absent on legacy
+  // records, which live on local disk at storedPath instead.
+  storageKey: {
+    type: String,
+    default: null,
+  },
   storedPath: {
     type: String,
-    required: true,
+    default: null,
   },
   originalName: {
     type: String,

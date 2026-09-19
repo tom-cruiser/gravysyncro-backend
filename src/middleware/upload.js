@@ -109,10 +109,10 @@ exports.uploadAudioSingle = audioUpload.single('file');
 // storage. Deliberately has NO fileFilter and no post-processing anywhere
 // in its path — the whole point of this endpoint is that whatever bytes
 // come in are the exact bytes stored and later served back. Files live on
-// local disk under uploads/user_{userId}/, one directory per user, rather
-// than Wasabi — this is a separate, additive feature from the Document
-// archiving pipeline (see fileController.js) and doesn't share its storage.
-const plusUploadsRoot = path.join(__dirname, '..', '..', 'uploads');
+// a temp dir only long enough for fileController.uploadFiles to stream them
+// to Wasabi (files/user_{userId}/...) and delete the temp copy. Nothing
+// durable lives on the server's disk, so redeploys can't lose files.
+const plusUploadsRoot = path.join(os.tmpdir(), 'gravysyncro-vault-uploads');
 
 const plusFileStorage = multer.diskStorage({
   destination: (req, file, cb) => {

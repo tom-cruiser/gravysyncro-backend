@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const mongoose = require('mongoose');
 const File = require('../models/File');
+const wasabi = require('../config/wasabi');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 
@@ -13,6 +14,12 @@ const sanitizeFileName = (name = 'file') =>
 
 const encodeRFC5987ValueChars = (str) =>
   encodeURIComponent(str).replace(/['()]/g, escape).replace(/\*/g, '%2A');
+
+// Best-effort removal from wherever the bytes live (Wasabi, or legacy disk).
+const removeStoredFile = (file) => {
+  if (file.storageKey) wasabi.deleteFile(file.storageKey).catch(() => {});
+  else if (file.storedPath) fs.unlink(file.storedPath, () => {});
+};
 
 const escapeRegExp = (value = '') => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -44,10 +51,36 @@ exports.uploadFiles = catchAsync(async (req, res, next) => {
     relativePaths = [req.body.relativePath];
   }
 
+  // Multer wrote each upload to a temp file; move the bytes to Wasabi and
+  // drop the temp copy. On any failure, roll back what was already sent.
+  const uploadedKeys = [];
+  const storageKeys = [];
+  try {
+    for (const file of req.files) {
+      const key = `files/user_${req.user._id}/${path.basename(file.path)}`;
+      await wasabi.s3
+        .upload({
+          Bucket: process.env.WASABI_BUCKET,
+          Key: key,
+          Body: fs.createReadStream(file.path),
+          ContentType: file.mimetype || 'application/octet-stream',
+          ServerSideEncryption: 'AES256',
+        })
+        .promise();
+      uploadedKeys.push(key);
+      storageKeys.push(key);
+    }
+  } catch (err) {
+    await Promise.all(uploadedKeys.map((k) => wasabi.deleteFile(k).catch(() => {})));
+    req.files.forEach((file) => fs.unlink(file.path, () => {}));
+    return next(new AppError('Failed to store file(s). Please try again.', 502));
+  }
+  req.files.forEach((file) => fs.unlink(file.path, () => {}));
+
   const files = await File.insertMany(
     req.files.map((file, index) => ({
       userId: req.user._id,
-      storedPath: file.path,
+      storageKey: storageKeys[index],
       originalName: file.originalname,
       relativePath: relativePaths[index] || file.originalname,
       mimeType: file.mimetype || 'application/octet-stream',
@@ -114,7 +147,7 @@ exports.downloadFile = catchAsync(async (req, res, next) => {
     return next(new AppError('File not found', 404));
   }
 
-  if (!fs.existsSync(file.storedPath)) {
+  if (!file.storageKey && !fs.existsSync(file.storedPath)) {
     return next(new AppError('File is missing from storage', 404));
   }
 
@@ -134,8 +167,16 @@ exports.downloadFile = catchAsync(async (req, res, next) => {
     `attachment; filename="${safeName}"; filename*=UTF-8''${encodeRFC5987ValueChars(safeName)}`,
   );
 
-  const stream = fs.createReadStream(file.storedPath);
-  stream.on('error', () => next(new AppError('Failed to read file from storage', 500)));
+  const stream = file.storageKey
+    ? wasabi.s3.getObject({ Bucket: process.env.WASABI_BUCKET, Key: file.storageKey }).createReadStream()
+    : fs.createReadStream(file.storedPath);
+  stream.on('error', (err) => {
+    if (res.headersSent) return res.destroy(err);
+    res.removeHeader('Content-Length');
+    res.removeHeader('Content-Disposition');
+    const missing = err && (err.code === 'NoSuchKey' || err.statusCode === 404);
+    next(new AppError(missing ? 'File is missing from storage' : 'Failed to read file from storage', missing ? 404 : 500));
+  });
   stream.pipe(res);
 });
 
@@ -149,7 +190,7 @@ exports.deleteFile = catchAsync(async (req, res, next) => {
   }
 
   await File.deleteOne({ _id: file._id });
-  fs.unlink(file.storedPath, () => {});
+  removeStoredFile(file);
 
   res.status(200).json({ status: 'success', message: 'File deleted.' });
 });
@@ -172,14 +213,14 @@ exports.bulkDeleteFiles = catchAsync(async (req, res, next) => {
 
   const validIds = ids.filter((id) => mongoose.Types.ObjectId.isValid(id));
 
-  const files = await File.find({ _id: { $in: validIds }, userId: req.user._id }).select('_id storedPath');
+  const files = await File.find({ _id: { $in: validIds }, userId: req.user._id }).select('_id storedPath storageKey');
 
   if (files.length === 0) {
     return res.status(200).json({ status: 'success', data: { deletedCount: 0, requested: ids.length } });
   }
 
   await File.deleteMany({ _id: { $in: files.map((file) => file._id) } });
-  files.forEach((file) => fs.unlink(file.storedPath, () => {}));
+  files.forEach(removeStoredFile);
 
   res.status(200).json({
     status: 'success',
